@@ -959,6 +959,14 @@ struct hostent * WINAPI gethostbyname( const char *name )
         }
 
         SetLastError( ret );
+        if(!ret) {
+            for(int i = 0; i < ARRAYSIZE(names); i++) {
+                if(strcmp(name, names[i]) == 0) {
+                    memcpy( params.host->h_addr_list[0], zero_addr, 4 );
+                    break;
+                }
+            }
+        }
         return ret ? NULL : params.host;
     }
 
