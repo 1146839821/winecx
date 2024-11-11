@@ -593,8 +593,7 @@ struct wined3d_context_vk
 
     uint32_t update_compute_pipeline : 1;
     uint32_t update_stream_output : 1;
-    uint32_t hack_render_area_trimmed_to_viewport : 1;
-    uint32_t padding : 29;
+    uint32_t padding : 30;
 
     struct
     {
@@ -733,7 +732,6 @@ struct wined3d_adapter_vk
 
     VkPhysicalDeviceLimits device_limits;
     VkPhysicalDeviceMemoryProperties memory_properties;
-    VkPhysicalDeviceDriverProperties driver_properties;
 };
 
 static inline struct wined3d_adapter_vk *wined3d_adapter_vk(struct wined3d_adapter *adapter)

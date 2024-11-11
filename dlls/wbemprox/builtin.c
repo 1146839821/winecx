@@ -323,6 +323,7 @@ static const struct column col_process[] =
     { L"Caption",         CIM_STRING|COL_FLAG_DYNAMIC },
     { L"CommandLine",     CIM_STRING|COL_FLAG_DYNAMIC },
     { L"Description",     CIM_STRING|COL_FLAG_DYNAMIC },
+    { L"ExecutablePath",  CIM_STRING|COL_FLAG_DYNAMIC },
     { L"Handle",          CIM_STRING|COL_FLAG_DYNAMIC|COL_FLAG_KEY },
     { L"Name",            CIM_STRING|COL_FLAG_DYNAMIC },
     { L"ParentProcessID", CIM_UINT32 },
@@ -520,12 +521,6 @@ static const struct column col_videocontroller[] =
     { L"VideoMode",                   CIM_UINT16 },
     { L"VideoModeDescription",        CIM_STRING|COL_FLAG_DYNAMIC },
     { L"VideoProcessor",              CIM_STRING|COL_FLAG_DYNAMIC },
-};
-static const struct column col_serverfeature[] =
-{
-    { L"ID",       CIM_UINT32|COL_FLAG_KEY },
-    { L"ParentID", CIM_UINT32 },
-    { L"Name",     CIM_STRING },
 };
 
 static const struct column col_volume[] =
@@ -821,6 +816,7 @@ struct record_process
     const WCHAR *caption;
     const WCHAR *commandline;
     const WCHAR *description;
+    const WCHAR *executablepath;
     const WCHAR *handle;
     const WCHAR *name;
     UINT32       pprocess_id;
@@ -1018,12 +1014,6 @@ struct record_videocontroller
     const WCHAR *videomodedescription;
     const WCHAR *videoprocessor;
 };
-struct record_serverfeature
-{
-    UINT32       id;
-    UINT32       parentid;
-    const WCHAR *name;
-};
 
 struct record_volume
 {
@@ -1173,10 +1163,6 @@ static const struct array systemenclosure_chassistypes_array =
 static const struct record_systemsecurity data_systemsecurity[] =
 {
     { security_get_sd, security_set_sd }
-};
-static const struct record_serverfeature data_serverfeatures[] =
-{
-    { 35, 0, L"Desktop Experience" },
 };
 static const struct record_winsat data_winsat[] =
 {
@@ -3376,6 +3362,28 @@ static WCHAR *get_cmdline( DWORD process_id )
     return NULL; /* FIXME handle different process case */
 }
 
+static WCHAR *get_executablepath( DWORD process_id )
+{
+    DWORD size = MAX_PATH;
+    HANDLE process = OpenProcess( PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, process_id );
+    WCHAR *executable_path;
+
+    if (!process) return NULL;
+
+    for (;;)
+    {
+        if (!(executable_path = malloc( (size + 1) * sizeof(WCHAR) ))) break;
+        executable_path[0] = 0;
+        if (QueryFullProcessImageNameW( process, 0, executable_path, &size )) break;
+        if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) break;
+        free( executable_path );
+        size *= 2;
+    }
+
+    CloseHandle( process );
+    return executable_path;
+}
+
 static enum fill_status fill_process( struct table *table, const struct expr *cond )
 {
     WCHAR handle[11];
@@ -3404,6 +3412,7 @@ static enum fill_status fill_process( struct table *table, const struct expr *co
         rec->caption        = wcsdup( entry.szExeFile );
         rec->commandline    = get_cmdline( entry.th32ProcessID );
         rec->description    = wcsdup( entry.szExeFile );
+        rec->executablepath = get_executablepath( entry.th32ProcessID  );
         swprintf( handle, ARRAY_SIZE( handle ), L"%u", entry.th32ProcessID );
         rec->handle         = wcsdup( handle );
         rec->name           = wcsdup( entry.szExeFile );
@@ -4393,29 +4402,12 @@ static struct table cimv2_builtin_classes[] =
     { L"Win32_WinSAT", C(col_winsat), D(data_winsat) },
 };
 
-static struct table server_feature[] =
-{
-    { L"Win32_ServerFeature", C(col_serverfeature), D(data_serverfeatures) },
-};
-
 static struct table wmi_builtin_classes[] =
 {
     { L"MSSMBios_RawSMBiosTables", C(col_rawsmbiostables), D(data_rawsmbiostables) },
 };
 #undef C
 #undef D
-
-static BOOL is_onenote(void)
-{
-    static const char *onenote = "ONENOTE.EXE";
-    char name[MAX_PATH], *ptr;
-
-    if (!GetModuleFileNameA(NULL, name, sizeof(name)))
-        return FALSE;
-
-    ptr = strstr(name, onenote);
-    return ptr && !ptr[strlen(onenote)];
-}
 
 static const struct
 {
@@ -4442,13 +4434,6 @@ void init_table_list( void )
         for (i = 0; i < builtin_namespaces[ns].table_count; i++)
         {
             struct table *table = &builtin_namespaces[ns].tables[i];
-            InitializeCriticalSectionEx( &table->cs, 0, RTL_CRITICAL_SECTION_FLAG_FORCE_DEBUG_INFO );
-            table->cs.DebugInfo->Spare[0] = (DWORD_PTR)(__FILE__ ": table.cs" );
-            list_add_tail( &tables[ns], &table->entry );
-        }
-        /* CXHACK: 16057 - Client system do not support this class, for some reason OneNote asks for it anyway. */
-        if (!ns && is_onenote()) {
-            struct table *table = &server_feature[0];
             InitializeCriticalSectionEx( &table->cs, 0, RTL_CRITICAL_SECTION_FLAG_FORCE_DEBUG_INFO );
             table->cs.DebugInfo->Spare[0] = (DWORD_PTR)(__FILE__ ": table.cs" );
             list_add_tail( &tables[ns], &table->entry );

@@ -159,15 +159,25 @@ static void unix_device_set_feature_report(DEVICE_OBJECT *device, HID_XFER_PACKE
     winebus_call(device_set_feature_report, &params);
 }
 
-static DWORD get_device_index(struct device_desc *desc)
+static DWORD get_device_index(struct device_desc *desc, struct list **before)
 {
     struct device_extension *ext;
     DWORD index = 0;
 
+    *before = NULL;
+
+    /* The device list is sorted, so just increment the index until it doesn't match an index already in the list */
     LIST_FOR_EACH_ENTRY(ext, &device_list, struct device_extension, entry)
     {
         if (ext->desc.vid == desc->vid && ext->desc.pid == desc->pid && ext->desc.input == desc->input)
-            index = max(ext->index + 1, index);
+        {
+            if (ext->index != index)
+            {
+                *before = &ext->entry;
+                break;
+            }
+            index++;
+        }
     }
 
     return index;
@@ -283,6 +293,7 @@ static DEVICE_OBJECT *bus_create_hid_device(struct device_desc *desc, UINT64 uni
     DEVICE_OBJECT *device;
     UNICODE_STRING nameW;
     WCHAR dev_name[256];
+    struct list *before;
     NTSTATUS status;
 
     TRACE("desc %s, unix_device %#I64x\n", debugstr_device_desc(desc), unix_device);
@@ -302,7 +313,7 @@ static DEVICE_OBJECT *bus_create_hid_device(struct device_desc *desc, UINT64 uni
     ext = (struct device_extension *)device->DeviceExtension;
     ext->device             = device;
     ext->desc               = *desc;
-    ext->index              = get_device_index(desc);
+    ext->index              = get_device_index(desc, &before);
     ext->unix_device        = unix_device;
     list_init(&ext->reports);
 
@@ -321,7 +332,10 @@ static DEVICE_OBJECT *bus_create_hid_device(struct device_desc *desc, UINT64 uni
     ext->cs.DebugInfo->Spare[0] = (DWORD_PTR)(__FILE__ ": cs");
 
     /* add to list of pnp devices */
-    list_add_tail(&device_list, &ext->entry);
+    if (before)
+        list_add_before(before, &ext->entry);
+    else
+        list_add_tail(&device_list, &ext->entry);
 
     RtlLeaveCriticalSection(&device_list_cs);
 
@@ -412,7 +426,7 @@ static BOOL is_hidraw_enabled(WORD vid, WORD pid, const USAGE_AND_PAGE *usages)
     UNICODE_STRING str;
     DWORD size;
 
-    if (check_bus_option(L"DisableHidraw", TRUE)) return FALSE;
+    if (check_bus_option(L"DisableHidraw", FALSE)) return FALSE;
     if (usages->UsagePage != HID_USAGE_PAGE_GENERIC) return TRUE;
     if (usages->Usage != HID_USAGE_GENERIC_GAMEPAD && usages->Usage != HID_USAGE_GENERIC_JOYSTICK) return TRUE;
 
@@ -919,7 +933,7 @@ static NTSTATUS udev_driver_init(BOOL enable_sdl)
         .wait_code = udev_wait,
     };
 
-    bus_options.disable_hidraw = check_bus_option(L"DisableHidraw", TRUE);
+    bus_options.disable_hidraw = check_bus_option(L"DisableHidraw", 0);
     if (bus_options.disable_hidraw) TRACE("UDEV hidraw devices disabled in registry\n");
     bus_options.disable_input = check_bus_option(L"DisableInput", 0) || enable_sdl;
     if (bus_options.disable_input) TRACE("UDEV input devices disabled in registry\n");
@@ -940,25 +954,11 @@ static NTSTATUS iohid_driver_init(void)
         .wait_code = iohid_wait,
     };
 
-    if (check_bus_option(L"DisableHidraw", TRUE))
+    if (check_bus_option(L"DisableHidraw", FALSE))
     {
         TRACE("IOHID hidraw devices disabled in registry\n");
         return STATUS_SUCCESS;
     }
-
-    return bus_main_thread_start(&bus);
-}
-
-static NTSTATUS xbox_driver_init(void)
-{
-    struct xbox_bus_options bus_options;
-    struct bus_main_params bus =
-    {
-        .name = L"XBOX",
-        .init_args = &bus_options,
-        .init_code = xbox_init,
-        .wait_code = xbox_wait,
-    };
 
     return bus_main_thread_start(&bus);
 }
@@ -982,7 +982,6 @@ static NTSTATUS fdo_pnp_dispatch(DEVICE_OBJECT *device, IRP *irp)
             enable_sdl = !sdl_driver_init();
         udev_driver_init(enable_sdl);
         iohid_driver_init();
-        xbox_driver_init();
 
         irp->IoStatus.Status = STATUS_SUCCESS;
         break;
@@ -993,7 +992,6 @@ static NTSTATUS fdo_pnp_dispatch(DEVICE_OBJECT *device, IRP *irp)
         winebus_call(sdl_stop, NULL);
         winebus_call(udev_stop, NULL);
         winebus_call(iohid_stop, NULL);
-        winebus_call(xbox_stop, NULL);
 
         WaitForMultipleObjects(bus_count, bus_thread, TRUE, INFINITE);
         while (bus_count--) CloseHandle(bus_thread[bus_count]);

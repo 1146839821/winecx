@@ -44,8 +44,6 @@
 #include "process.h"
 #include "request.h"
 #include "user.h"
-#include "esync.h"
-#include "msync.h"
 
 #define WM_NCMOUSEFIRST WM_NCMOUSEMOVE
 #define WM_NCMOUSELAST  (WM_NCMOUSEFIRST+(WM_MOUSELAST-WM_MOUSEFIRST))
@@ -72,8 +70,6 @@ struct message_result
     void                  *data;          /* message reply data */
     unsigned int           data_size;     /* size of message reply data */
     struct timeout_user   *timeout;       /* result timeout */
-    thread_id_t            hook_thread_id;/* Hook owner thread id. */
-    client_ptr_t           hook_proc;     /* Hook proc address. */
 };
 
 struct message
@@ -137,10 +133,6 @@ struct msg_queue
     timeout_t              last_get_msg;    /* time of last get message call */
     int                    keystate_lock;   /* owns an input keystate lock */
     const queue_shm_t     *shared;          /* queue in session shared memory */
-    struct esync_fd       *esync_fd;        /* esync file descriptor (signalled on message) */
-    int                    esync_in_msgwait; /* our thread is currently waiting on us */
-    unsigned int           msync_idx;
-    int                    msync_in_msgwait; /* our thread is currently waiting on us */
 };
 
 struct hotkey
@@ -157,8 +149,6 @@ static void msg_queue_dump( struct object *obj, int verbose );
 static int msg_queue_add_queue( struct object *obj, struct wait_queue_entry *entry );
 static void msg_queue_remove_queue( struct object *obj, struct wait_queue_entry *entry );
 static int msg_queue_signaled( struct object *obj, struct wait_queue_entry *entry );
-static struct esync_fd *msg_queue_get_esync_fd( struct object *obj, enum esync_type *type );
-static unsigned int msg_queue_get_msync_idx( struct object *obj, enum msync_type *type );
 static void msg_queue_satisfied( struct object *obj, struct wait_queue_entry *entry );
 static void msg_queue_destroy( struct object *obj );
 static void msg_queue_poll_event( struct fd *fd, int event );
@@ -174,8 +164,6 @@ static const struct object_ops msg_queue_ops =
     msg_queue_add_queue,       /* add_queue */
     msg_queue_remove_queue,    /* remove_queue */
     msg_queue_signaled,        /* signaled */
-    msg_queue_get_esync_fd,    /* get_esync_fd */
-    msg_queue_get_msync_idx,   /* get_msync_idx */
     msg_queue_satisfied,       /* satisfied */
     no_signal,                 /* signal */
     no_get_fd,                 /* get_fd */
@@ -213,8 +201,6 @@ static const struct object_ops thread_input_ops =
     no_add_queue,                 /* add_queue */
     NULL,                         /* remove_queue */
     NULL,                         /* signaled */
-    NULL,                         /* get_esync_fd */
-    NULL,                         /* get_msync_idx */
     NULL,                         /* satisfied */
     no_signal,                    /* signal */
     no_get_fd,                    /* get_fd */
@@ -326,10 +312,6 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
         queue->hooks           = NULL;
         queue->last_get_msg    = current_time;
         queue->keystate_lock   = 0;
-        queue->esync_fd        = NULL;
-        queue->esync_in_msgwait = 0;
-        queue->msync_idx       = 0;
-        queue->msync_in_msgwait = 0;
         list_init( &queue->send_result );
         list_init( &queue->callback_result );
         list_init( &queue->pending_timers );
@@ -351,12 +333,6 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
             shared->changed_bits = 0;
         }
         SHARED_WRITE_END;
-
-        if (do_esync())
-            queue->esync_fd = esync_create_fd( 0, 0 );
-
-        if (do_msync())
-            queue->msync_idx = msync_alloc_shm( 0, 0 );
 
         thread->queue = queue;
 
@@ -496,7 +472,7 @@ static int is_cursor_clipped( struct desktop *desktop )
 {
     const desktop_shm_t *desktop_shm = desktop->shared;
     rectangle_t top_rect, clip_rect = desktop_shm->cursor.clip;
-    get_top_window_rectangle( desktop, &top_rect );
+    get_virtual_screen_rect( desktop, &top_rect, 1 );
     return !is_rect_equal( &clip_rect, &top_rect );
 }
 
@@ -608,6 +584,15 @@ static void set_cursor_pos( struct desktop *desktop, int x, int y )
     queue_hardware_message( desktop, msg, 1 );
 }
 
+/* sync cursor position after window change */
+void update_cursor_pos( struct desktop *desktop )
+{
+    const desktop_shm_t *desktop_shm;
+
+    desktop_shm = desktop->shared;
+    set_cursor_pos( desktop, desktop_shm->cursor.x, desktop_shm->cursor.y );
+}
+
 /* retrieve default position and time for synthesized messages */
 static void get_message_defaults( struct msg_queue *queue, int *x, int *y, unsigned int *time )
 {
@@ -627,7 +612,7 @@ void set_clip_rectangle( struct desktop *desktop, const rectangle_t *rect, unsig
     unsigned int old_flags;
     int x, y;
 
-    get_top_window_rectangle( desktop, &top_rect );
+    get_virtual_screen_rect( desktop, &top_rect, 1 );
     if (rect)
     {
         new_rect = *rect;
@@ -763,9 +748,6 @@ static inline void clear_queue_bits( struct msg_queue *queue, unsigned int bits 
         if (queue->keystate_lock) unlock_input_keystate( queue->input );
         queue->keystate_lock = 0;
     }
-
-    if (do_esync() && !is_signaled( queue ))
-        esync_clear( queue->esync_fd );
 }
 
 /* check if message is matched by the filter */
@@ -996,13 +978,6 @@ static void result_timeout( void *private )
     {
         struct message *msg = result->msg;
 
-        if (result->sender && result->hook_thread_id && result->hook_proc)
-        {
-            if (debug_level > 1)
-                fprintf( stderr, "disabling hung hook: tid %04x, proc %#lx\n",
-                         result->hook_thread_id, (unsigned long)result->hook_proc );
-            disable_hung_hook( result->sender->input->desktop, msg->msg, result->hook_thread_id, result->hook_proc );
-        }
         result->msg = NULL;
         msg->result = NULL;
         remove_queue_message( result->receiver, msg, SEND_MESSAGE );
@@ -1014,8 +989,7 @@ static void result_timeout( void *private )
 /* allocate and fill a message result structure */
 static struct message_result *alloc_message_result( struct msg_queue *send_queue,
                                                     struct msg_queue *recv_queue,
-                                                    struct message *msg, timeout_t timeout,
-                                                    thread_id_t hook_thread_id, client_ptr_t hook_proc)
+                                                    struct message *msg, timeout_t timeout )
 {
     struct message_result *result = mem_alloc( sizeof(*result) );
     if (result)
@@ -1030,8 +1004,6 @@ static struct message_result *alloc_message_result( struct msg_queue *send_queue
         result->hardware_msg = NULL;
         result->desktop      = NULL;
         result->callback_msg = NULL;
-        result->hook_thread_id = hook_thread_id;
-        result->hook_proc = hook_proc;
 
         if (msg->type == MSG_CALLBACK)
         {
@@ -1255,13 +1227,6 @@ static int is_queue_hung( struct msg_queue *queue )
         if (get_wait_queue_thread(entry)->queue == queue)
             return 0;  /* thread is waiting on queue -> not hung */
     }
-
-    if (do_msync() && queue->msync_in_msgwait)
-        return 0;   /* thread is waiting on queue in absentia -> not hung */
-
-    if (do_esync() && queue->esync_in_msgwait)
-        return 0;   /* thread is waiting on queue in absentia -> not hung */
-
     return 1;
 }
 
@@ -1314,20 +1279,6 @@ static int msg_queue_signaled( struct object *obj, struct wait_queue_entry *entr
             set_fd_events( queue->fd, POLLIN );
     }
     return ret || is_signaled( queue );
-}
-
-static struct esync_fd *msg_queue_get_esync_fd( struct object *obj, enum esync_type *type )
-{
-    struct msg_queue *queue = (struct msg_queue *)obj;
-    *type = ESYNC_QUEUE;
-    return queue->esync_fd;
-}
-
-static unsigned int msg_queue_get_msync_idx( struct object *obj, enum msync_type *type )
-{
-    struct msg_queue *queue = (struct msg_queue *)obj;
-    *type = MSYNC_QUEUE;
-    return queue->msync_idx;
 }
 
 static void msg_queue_satisfied( struct object *obj, struct wait_queue_entry *entry )
@@ -1386,8 +1337,6 @@ static void msg_queue_destroy( struct object *obj )
     if (queue->hooks) release_object( queue->hooks );
     if (queue->fd) release_object( queue->fd );
     if (queue->shared) free_shared_object( queue->shared );
-    if (do_esync()) esync_close_fd( queue->esync_fd );
-    if (do_msync()) msync_destroy_semaphore( queue->msync_idx );
 }
 
 static void msg_queue_poll_event( struct fd *fd, int event )
@@ -2014,10 +1963,8 @@ static int send_hook_ll_message( struct desktop *desktop, struct message *hardwa
     struct msg_queue *queue;
     struct message *msg;
     timeout_t timeout = 2000 * -10000;  /* FIXME: load from registry */
-    thread_id_t hook_thread_id;
-    client_ptr_t hook_proc;
 
-    if (!(hook_thread = get_first_global_hook( desktop, id, &hook_thread_id, &hook_proc ))) return 0;
+    if (!(hook_thread = get_first_global_hook( desktop, id ))) return 0;
     if (!(queue = hook_thread->queue)) return 0;
     if (is_queue_hung( queue )) return 0;
 
@@ -2035,7 +1982,7 @@ static int send_hook_ll_message( struct desktop *desktop, struct message *hardwa
     msg->result    = NULL;
 
     if (!(msg->data = memdup( hardware_msg->data, hardware_msg->data_size )) ||
-        !(msg->result = alloc_message_result( sender, queue, msg, timeout, hook_thread_id, hook_proc )))
+        !(msg->result = alloc_message_result( sender, queue, msg, timeout )))
     {
         free_message( msg );
         return 0;
@@ -2584,7 +2531,7 @@ static void queue_pointer_message( struct pointer *pointer, int repeated )
     struct message *msg;
     int x, y;
 
-    get_top_window_rectangle( desktop, &top_rect );
+    get_virtual_screen_rect( desktop, &top_rect, 0 );
     x = LOWORD(input->hw.lparam) * (top_rect.right - top_rect.left) / 65535;
     y = HIWORD(input->hw.lparam) * (top_rect.bottom - top_rect.top) / 65535;
 
@@ -3168,11 +3115,6 @@ DECL_HANDLER(set_queue_mask)
             }
             else wake_up( &queue->obj, 0 );
         }
-        if (do_msync() && !is_signaled( queue ))
-            msync_clear( &queue->obj );
-
-        if (do_esync() && !is_signaled( queue ))
-            esync_clear( queue->esync_fd );
     }
 }
 
@@ -3193,12 +3135,6 @@ DECL_HANDLER(get_queue_status)
             shared->changed_bits &= ~req->clear_bits;
         }
         SHARED_WRITE_END;
-
-        if (do_msync() && !is_signaled( queue ))
-            msync_clear( &queue->obj );
-
-        if (do_esync() && !is_signaled( queue ))
-            esync_clear( queue->esync_fd );
     }
     else reply->wake_bits = reply->changed_bits = 0;
 }
@@ -3253,7 +3189,7 @@ DECL_HANDLER(send_message)
         case MSG_ASCII:
         case MSG_UNICODE:
         case MSG_CALLBACK:
-            if (!(msg->result = alloc_message_result( send_queue, recv_queue, msg, req->timeout, 0, 0 )))
+            if (!(msg->result = alloc_message_result( send_queue, recv_queue, msg, req->timeout )))
             {
                 free_message( msg );
                 break;
@@ -3456,12 +3392,6 @@ DECL_HANDLER(get_message)
     SHARED_WRITE_END;
 
     set_error( STATUS_PENDING );  /* FIXME */
-
-    if (do_msync() && !is_signaled( queue ))
-        msync_clear( &queue->obj );
-
-    if (do_esync() && !is_signaled( queue ))
-        esync_clear( queue->esync_fd );
 }
 
 
@@ -4251,34 +4181,4 @@ DECL_HANDLER(set_keyboard_repeat)
     if (!desktop->key_repeat.enable) stop_key_repeat( desktop );
 
     release_object( desktop );
-}
-
-DECL_HANDLER(esync_msgwait)
-{
-    struct msg_queue *queue = get_current_queue();
-
-    if (!queue) return;
-    queue->esync_in_msgwait = req->in_msgwait;
-
-    if (current->process->idle_event && !(queue->shared->wake_mask & QS_SMRESULT))
-        set_event( current->process->idle_event );
-
-    /* and start/stop waiting on the driver */
-    if (queue->fd)
-        set_fd_events( queue->fd, req->in_msgwait ? POLLIN : 0 );
-}
-
-DECL_HANDLER(msync_msgwait)
-{
-    struct msg_queue *queue = get_current_queue();
-
-    if (!queue) return;
-    queue->msync_in_msgwait = req->in_msgwait;
-
-    if (current->process->idle_event && !(queue->shared->wake_mask & QS_SMRESULT))
-        set_event( current->process->idle_event );
-
-    /* and start/stop waiting on the driver */
-    if (queue->fd)
-        set_fd_events( queue->fd, req->in_msgwait ? POLLIN : 0 );
 }

@@ -155,9 +155,6 @@ void DDRAW_Convert_DDSCAPS_1_To_2(const DDSCAPS *pIn, DDSCAPS2 *pOut);
 void DDRAW_Convert_DDDEVICEIDENTIFIER_2_To_1(const DDDEVICEIDENTIFIER2 *pIn, DDDEVICEIDENTIFIER *pOut);
 struct wined3d_vertex_declaration *ddraw_find_decl(struct ddraw *ddraw, DWORD fvf);
 
-/* hack for WA/WWP/Diablo */
-extern int use_desktop_hack;
-
 #define DDRAW_SURFACE_LOCATION_DEFAULT 0x00000001
 #define DDRAW_SURFACE_LOCATION_DRAW    0x00000002
 
@@ -311,6 +308,7 @@ void ddraw_handle_table_destroy(struct ddraw_handle_table *t);
 DWORD ddraw_allocate_handle(struct ddraw_handle_table *t, void *object, enum ddraw_handle_type type);
 void *ddraw_free_handle(struct ddraw_handle_table *t, DWORD handle, enum ddraw_handle_type type);
 void *ddraw_get_object(struct ddraw_handle_table *t, DWORD handle, enum ddraw_handle_type type);
+extern struct ddraw_handle_table global_handle_table;
 
 struct d3d_device
 {

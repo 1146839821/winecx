@@ -253,10 +253,7 @@ static HRESULT WINAPI DefaultHandler_NDIUnknown_QueryInterface(
   if (*ppvObject == NULL)
   {
     WARN( "() : asking for unsupported interface %s\n", debugstr_guid(riid));
-    /* native returns CO_E_OBJNOTCONNECTED here instead of E_NOINTERFACE, since
-     * the latter means that an interface will *never* be supported, but it
-     * could be supported later when we connect to the delegate object */
-    return CO_E_OBJNOTCONNECTED;
+    return E_NOINTERFACE;
   }
 
   /*

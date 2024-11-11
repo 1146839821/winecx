@@ -683,8 +683,6 @@ static DWORD WINAPI clipboard_thread( void *arg )
     ATOM atom;
     MSG msg;
 
-    SetThreadPriority( GetCurrentThread(), THREAD_PRIORITY_IDLE );
-
     if (!wait_clipboard_mutex()) return 0;
 
     memset( &class, 0, sizeof(class) );
@@ -703,19 +701,7 @@ static DWORD WINAPI clipboard_thread( void *arg )
         return 0;
     }
 
-    while (TRUE) 
-    {
-        while (PeekMessageW( &msg, NULL, 0, 0, PM_REMOVE ))
-        {
-            if (msg.message == WM_QUIT)
-                return 0; 
-
-            DispatchMessageW( &msg );
-        }
-
-        Sleep(15);
-    }
-
+    while (GetMessageW( &msg, 0, 0, 0 )) DispatchMessageW( &msg );
     return 0;
 }
 
@@ -752,7 +738,6 @@ static DWORD WINAPI display_settings_restorer_thread( void *param )
     WNDCLASSW class;
     MSG msg;
 
-    SetThreadPriority( GetCurrentThread(), THREAD_PRIORITY_IDLE );
     SetThreadDescription( GetCurrentThread(), L"wine_explorer_display_settings_restorer" );
 
     wait_named_mutex( L"__wine_display_settings_restorer_mutex" );
@@ -944,6 +929,22 @@ static BOOL get_default_enable_shell( const WCHAR *name )
     /* Default off, except for the magic desktop name "shell" */
     if (!found) result = (lstrcmpiW( name, L"shell" ) == 0);
     return result;
+}
+
+static BOOL get_default_enable_launchers(void)
+{
+    BOOL result;
+    DWORD size = sizeof(result);
+
+    if (!RegGetValueW( HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer",
+                       L"NoDesktop", RRF_RT_REG_DWORD, NULL, &result, &size ))
+        return !result;
+
+    if (!RegGetValueW( HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer",
+                       L"NoDesktop", RRF_RT_REG_DWORD, NULL, &result, &size ))
+        return !result;
+
+    return TRUE;
 }
 
 static BOOL get_default_show_systray( const WCHAR *name )
@@ -1202,14 +1203,11 @@ void manage_desktop( WCHAR *arg )
     WCHAR *cmdline = NULL, *driver = NULL;
     WCHAR *p = arg;
     const WCHAR *name = NULL;
-    BOOL enable_shell, show_systray, no_tray_items;
+    BOOL enable_shell, enable_launchers, show_systray, no_tray_items;
     void (WINAPI *pShellDDEInit)( BOOL ) = NULL;
     HMODULE shell32;
     HANDLE thread;
     DWORD id;
-
-    SetPriorityClass( GetCurrentProcess(), IDLE_PRIORITY_CLASS );
-    SetThreadPriority( GetCurrentThread(), THREAD_PRIORITY_IDLE );
 
     /* get the rest of the command line (if any) */
     while (*p && !is_whitespace(*p)) p++;
@@ -1240,6 +1238,7 @@ void manage_desktop( WCHAR *arg )
     }
 
     enable_shell = name ? get_default_enable_shell( name ) : FALSE;
+    enable_launchers = get_default_enable_launchers();
     show_systray = get_default_show_systray( name );
     no_tray_items = get_no_tray_items_display();
 
@@ -1286,7 +1285,7 @@ void manage_desktop( WCHAR *arg )
         initialize_appbar();
 
         initialize_systray( using_root, enable_shell, show_systray, no_tray_items );
-        if (!using_root) initialize_launchers( hwnd );
+        if (!using_root && enable_launchers) initialize_launchers( hwnd );
 
         if ((shell32 = LoadLibraryW( L"shell32.dll" )) &&
             (pShellDDEInit = (void *)GetProcAddress( shell32, (LPCSTR)188)))
@@ -1312,6 +1311,7 @@ void manage_desktop( WCHAR *arg )
     }
 
     desktopshellbrowserwindow_init();
+    shellwindows_init();
 
     /* Ideally we would set the window of an IShellView here, but we never
        actually create one, so the desktop window itself will have to do. */
@@ -1320,25 +1320,11 @@ void manage_desktop( WCHAR *arg )
     /* run the desktop message loop */
     if (hwnd)
     {
-        shellwindows_init();
-
         TRACE( "desktop message loop starting on hwnd %p\n", hwnd );
-        while (TRUE) 
-        {
-            while (PeekMessageW( &msg, NULL, 0, 0, PM_REMOVE ))
-            {
-                if (msg.message == WM_QUIT)
-                    goto out;
-
-                DispatchMessageW( &msg );
-            }
-
-            Sleep(15);
-        }
+        while (GetMessageW( &msg, 0, 0, 0 )) DispatchMessageW( &msg );
         TRACE( "desktop message loop exiting for hwnd %p\n", hwnd );
     }
 
-out:
     if (pShellDDEInit) pShellDDEInit( FALSE );
 
     ExitProcess( 0 );

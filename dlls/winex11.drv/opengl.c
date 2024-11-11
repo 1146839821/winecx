@@ -338,7 +338,6 @@ static Bool (*pglXQueryVersion)( Display *dpy, int *maj, int *min );
 static Bool (*pglXIsDirect)( Display *dpy, GLXContext ctx );
 static GLXContext (*pglXGetCurrentContext)( void );
 static GLXDrawable (*pglXGetCurrentDrawable)( void );
-static void (*pglXWaitGL)( void );
 
 /* GLX 1.1 */
 static const char *(*pglXQueryExtensionsString)( Display *dpy, int screen );
@@ -595,7 +594,6 @@ static void init_opengl(void)
     LOAD_FUNCPTR(glXIsDirect);
     LOAD_FUNCPTR(glXMakeCurrent);
     LOAD_FUNCPTR(glXSwapBuffers);
-    LOAD_FUNCPTR(glXWaitGL);
     LOAD_FUNCPTR(glXQueryVersion);
 
     /* GLX 1.1 */
@@ -1900,8 +1898,8 @@ static void present_gl_drawable( HWND hwnd, HDC hdc, struct gl_drawable *gl, BOO
 
     if (flush) XFlush( gdi_display );
 
-    NtUserGetClientRect( hwnd, &rect_dst, NtUserGetWinMonitorDpi( hwnd, MDT_DEFAULT ) );
-    NtUserMapWindowPoints( hwnd, toplevel, (POINT *)&rect_dst, 2, NtUserGetWinMonitorDpi( hwnd, MDT_DEFAULT ) );
+    NtUserGetClientRect( hwnd, &rect_dst, NtUserGetWinMonitorDpi( hwnd, MDT_RAW_DPI ) );
+    NtUserMapWindowPoints( hwnd, toplevel, (POINT *)&rect_dst, 2, NtUserGetWinMonitorDpi( hwnd, MDT_RAW_DPI ) );
 
     if ((data = get_win_data( toplevel )))
     {
@@ -2866,13 +2864,8 @@ static BOOL glxdrv_wglSwapBuffers( HDC hdc )
         break;
     }
 
-    if (ctx && drawable)
-    {
-        if (pglXWaitForSbcOML)
-            pglXWaitForSbcOML( gdi_display, gl->drawable, target_sbc, &ust, &msc, &sbc );
-        else if (pglXWaitGL)
-            pglXWaitGL();
-    }
+    if (ctx && drawable && pglXWaitForSbcOML)
+        pglXWaitForSbcOML( gdi_display, gl->drawable, target_sbc, &ust, &msc, &sbc );
 
     present_gl_drawable( hwnd, ctx ? ctx->hdc : hdc, gl, !pglXWaitForSbcOML );
     update_gl_drawable_size( gl );

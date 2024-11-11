@@ -1328,9 +1328,7 @@ static HRESULT WINAPI list_manager_IsConnectedToInternet(
         }
     }
 
-    /* CrossOver bug 14719 */
-    FIXME( "hack: returning VARIANT_TRUE\n" );
-    *pbIsConnected = VARIANT_TRUE;
+    *pbIsConnected = VARIANT_FALSE;
     return S_OK;
 }
 

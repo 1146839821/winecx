@@ -109,13 +109,9 @@ BOOL load_backend(void)
  */
 BOOL WINAPI DllMain( HINSTANCE instance, DWORD reason, void *reserved )
 {
-    static HMODULE hWineps;
-
     switch (reason)
     {
     case DLL_PROCESS_ATTACH:
-        /* Hack to avoid loading/unloading wineps many times */
-        hWineps = LoadLibraryA("WINEPS.DRV");
         WINSPOOL_hInstance = instance;
         DisableThreadLibraryCalls( instance );
         if (!__wine_init_unix_call())
@@ -127,7 +123,6 @@ BOOL WINAPI DllMain( HINSTANCE instance, DWORD reason, void *reserved )
         if (reserved) break;
         DeleteCriticalSection(&backend_cs);
         FreeLibrary(hlocalspl);
-        if(hWineps) FreeLibrary(hWineps);
         break;
     }
 

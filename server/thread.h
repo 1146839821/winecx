@@ -31,6 +31,7 @@ struct thread_apc;
 struct debug_obj;
 struct debug_event;
 struct msg_queue;
+struct completion_wait;
 
 enum run_state
 {
@@ -55,10 +56,6 @@ struct thread
     struct process        *process;
     thread_id_t            id;            /* thread id */
     struct list            mutex_list;    /* list of currently owned mutexes */
-    struct esync_fd       *esync_fd;      /* esync file descriptor (signalled on exit) */
-    struct esync_fd       *esync_apc_fd;  /* esync apc fd (signalled when APCs are present) */
-    unsigned int           msync_idx;
-    unsigned int           msync_apc_idx;
     unsigned int           system_regs;   /* which system regs have been set */
     struct msg_queue      *queue;         /* message queue */
     struct thread_wait    *wait;          /* current wait condition if sleeping */
@@ -95,6 +92,7 @@ struct thread
     struct list            kernel_object; /* list of kernel object pointers */
     data_size_t            desc_len;      /* thread description length in bytes */
     WCHAR                 *desc;          /* thread description string */
+    struct completion_wait *completion_wait; /* completion port wait object the thread is associated with */
 };
 
 extern struct thread *current;
@@ -124,7 +122,6 @@ extern void thread_cancel_apc( struct thread *thread, struct object *owner, enum
 extern int thread_add_inflight_fd( struct thread *thread, int client, int server );
 extern int thread_get_inflight_fd( struct thread *thread, int client );
 extern struct token *thread_get_impersonation_token( struct thread *thread );
-extern int set_thread_priority( struct thread *thread, int priority_class, int priority );
 extern int set_thread_affinity( struct thread *thread, affinity_t affinity );
 extern int suspend_thread( struct thread *thread );
 extern int resume_thread( struct thread *thread );

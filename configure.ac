@@ -21,6 +21,7 @@ AC_ARG_ENABLE(win64, AS_HELP_STRING([--enable-win64],[build a Win64 emulator on 
 AC_ARG_ENABLE(tests, AS_HELP_STRING([--disable-tests],[do not build the regression tests]))
 AC_ARG_ENABLE(build-id, AS_HELP_STRING([--enable-build-id],[include .buildid section in output objects]))
 AC_ARG_ENABLE(maintainer-mode, AS_HELP_STRING([--enable-maintainer-mode],[enable maintainer-specific build rules]))
+AC_ARG_ENABLE(sast,  AS_HELP_STRING([--enable-sast],[enable static application security testing using Clang]))
 AC_ARG_ENABLE(silent-rules, AS_HELP_STRING([--enable-silent-rules],[use silent build rules (override: "make V=1")]))
 AC_ARG_ENABLE(werror, AS_HELP_STRING([--enable-werror],[treat compilation warnings as errors]))
 
@@ -90,8 +91,11 @@ AC_ARG_WITH(wine-tools,AS_HELP_STRING([--with-wine-tools=DIR],[use Wine tools fr
 AC_ARG_WITH(wine64,    AS_HELP_STRING([--with-wine64=DIR],[use the 64-bit Wine in DIR for a Wow64 build]))
 
 AC_CANONICAL_HOST
-
 AC_SUBST(srcdir)
+
+AS_IF([test "x$enable_sast" = xyes],[CC=${CC:-clang}
+with_mingw=${with_mingw:-clang}
+AC_CHECK_PROGS(SARIF_CONVERTER,sarif-converter,false)])
 
 dnl **** Check for some programs ****
 
@@ -171,7 +175,7 @@ case "$host_cpu" in
   x86_64)          HOST_ARCH=x86_64 ;;
 esac
 m4_set_add_all([_AC_SUBST_VARS],[HOST_ARCH]m4_foreach([cpu],[aarch64,arm,arm64ec,i386,x86_64],
-                                [m4_foreach([var],[CC,CFLAGS,EXTRACFLAGS,LDFLAGS,DEBUG,TARGET,DELAYLOADFLAG,DISABLED_SUBDIRS],[,cpu[_]var])]))
+                                [m4_foreach([var],[CC,CFLAGS,EXTRACFLAGS,LDFLAGS,DEBUG,TARGET,STRIP,DELAYLOADFLAG,DISABLED_SUBDIRS],[,cpu[_]var])]))
 
 AC_CACHE_CHECK([for the directory containing the Wine tools], wine_cv_toolsdir,
   [wine_cv_toolsdir="$with_wine_tools"
@@ -363,7 +367,6 @@ m4_ifdef([AC_SYS_YEAR2038],
 AC_CHECK_HEADERS(\
 	CL/cl.h \
 	EGL/egl.h \
-	IOKit/usb/IOUSBLib.h \
 	OpenCL/opencl.h \
 	arpa/inet.h \
 	arpa/nameser.h \
@@ -408,7 +411,6 @@ AC_CHECK_HEADERS(\
 	sys/cdio.h \
 	sys/epoll.h \
 	sys/event.h \
-	sys/eventfd.h \
 	sys/extattr.h \
 	sys/filio.h \
 	sys/ipc.h \
@@ -627,9 +629,6 @@ case $host_os in
     AC_SUBST(APPKIT_LIBS,"-framework AppKit")
     AC_SUBST(SECURITY_LIBS,"-framework Security -framework CoreFoundation")
     AC_SUBST(SYSTEMCONFIGURATION_LIBS,"-framework SystemConfiguration")
-    AC_LANG_PUSH([Objective C])
-        AC_CHECK_HEADERS(AVFoundation/AVFoundation.h)
-    AC_LANG_POP([Objective C])
 
     WINELOADER_LDFLAGS="-Wl,-segalign,0x1000,-pagezero_size,0x1000,-sectcreate,__TEXT,__info_plist,loader/wine_info.plist"
 
@@ -664,7 +663,6 @@ case $host_os in
 
     if test "x$with_coreaudio" != "xno";
     then
-        AC_SUBST(AVFOUNDATION_LIBS,"-framework AVFoundation")
         AC_SUBST(COREAUDIO_LIBS,"-framework CoreFoundation -framework CoreAudio -framework AudioUnit -framework AudioToolbox -framework CoreMIDI")
         enable_winecoreaudio_drv=${enable_winecoreaudio_drv:-yes}
     fi
@@ -672,13 +670,6 @@ case $host_os in
     then
         AC_SUBST(OPENCL_LIBS,"-framework OpenCL")
         ac_cv_lib_OpenCL_clGetPlatformInfo=yes
-    fi
-    if test "$ac_cv_header_IOKit_usb_IOUSBLib_h" = "yes"
-    then
-        ac_save_LIBS="$LIBS"
-        LIBS="$LIBS $IOKIT_LIBS"
-        AC_CHECK_FUNCS(IOServiceMatching)
-        LIBS="$ac_save_LIBS"
     fi
 
     dnl Check for MTLDevice registryID property
@@ -789,10 +780,7 @@ AS_VAR_SET_IF([enable_archs],
      for arch
      do
          case $arch in
-           i386|x86_64|arm|aarch64|arm64ec)
-             cross_archs="$cross_archs $arch"
-             test $HOST_ARCH = $arch || CFLAGS="$CFLAGS -DIS_WOW64_BUILD"
-             ;;
+           i386|x86_64|arm|aarch64|arm64ec) cross_archs="$cross_archs $arch" ;;
            *) AC_MSG_ERROR([Unknown cross-compilation architecture '$arch']) ;;
          esac
      done],
@@ -865,6 +853,7 @@ do
 
     dnl Check if cross compiler supports -target argument
     llvm_target=$target
+    target_strip=${target:-llvm}-strip
     if test -z "$llvm_target"
     then
         case $wine_arch in
@@ -908,6 +897,7 @@ This is an error since --enable-archs=$wine_arch was requested.])])
     fi
 
     AS_VAR_SET([${wine_arch}_TARGET],[$target])
+    AS_VAR_SET([${wine_arch}_STRIP],[$target_strip])
     AS_VAR_PUSHDEF([wine_cv_crosscc_c99],[ac_cv_${wine_arch}_crosscc_c99])
     AC_MSG_CHECKING([for $CC option to enable C99 features])
     AC_CACHE_VAL([wine_cv_crosscc_c99],
@@ -1166,6 +1156,7 @@ then
     fi
 fi
 
+WINE_EXTLIB_FLAGS(CAPSTONE, capstone, capstone, "-I\$(top_srcdir)/libs/capstone/include")
 WINE_EXTLIB_FLAGS(FAUDIO, faudio, "faudio mfplat mfreadwrite mfuuid propsys", "-I\$(top_srcdir)/libs/faudio/include")
 WINE_EXTLIB_FLAGS(FLUIDSYNTH, fluidsynth, "fluidsynth", "-I\$(top_srcdir)/libs/fluidsynth/include")
 WINE_EXTLIB_FLAGS(GSM, gsm, gsm, "-I\$(top_srcdir)/libs/gsm/inc")
@@ -1181,7 +1172,6 @@ WINE_EXTLIB_FLAGS(VKD3D, vkd3d, vkd3d, "-I\$(top_srcdir)/libs/vkd3d/include")
 WINE_EXTLIB_FLAGS(XML2, xml2, xml2, "-I\$(top_srcdir)/libs/xml2/include -DLIBXML_STATIC")
 WINE_EXTLIB_FLAGS(XSLT, xslt, xslt, "-I\$(top_srcdir)/libs/xslt/libxslt -I\$(top_srcdir)/libs/xslt -DLIBXSLT_STATIC")
 WINE_EXTLIB_FLAGS(ZLIB, zlib, z, "-I\$(top_srcdir)/libs/zlib -DFAR= -DZ_SOLO")
-WINE_EXTLIB_FLAGS(ZYDIS, zydis, zydis, "-I\$(top_srcdir)/libs/zydis/include")
 
 dnl **** Check for pthread ****
 
@@ -1635,7 +1625,7 @@ dnl **** Check for FFmpeg ****
 if test "x$with_ffmpeg" != "xno";
 then
     WINE_PACKAGE_FLAGS(FFMPEG,[libavutil libavformat libavcodec],,,,
-        [AC_CHECK_HEADERS([libavutil/avutil.h libavformat/avformat.h libavcodec/avcodec.h])
+        [AC_CHECK_HEADERS([libavutil/avutil.h libavformat/avformat.h libavcodec/avcodec.h libavcodec/bsf.h])
          if test "$ac_cv_header_libavutil_avutil_h" = "yes" -a "$ac_cv_header_libavformat_avformat_h" = "yes" -a "$ac_cv_header_libavcodec_avcodec_h" = "yes"
          then
             AC_CHECK_LIB(avutil,av_log_set_callback,
@@ -2083,7 +2073,6 @@ AC_CHECK_FUNCS(\
 	port_create \
 	posix_fadvise \
 	posix_fallocate \
-	ppoll \
 	prctl \
 	sched_yield \
 	setproctitle \
@@ -2099,12 +2088,6 @@ dnl Check for clock_gettime which may be in -lrt
 ac_save_LIBS=$LIBS
 AC_SEARCH_LIBS(clock_gettime, rt,
                [AC_DEFINE(HAVE_CLOCK_GETTIME, 1, [Define to 1 if you have the 'clock_gettime' function.])
-                test "$ac_res" = "none required" || AC_SUBST(RT_LIBS,"$ac_res")])
-LIBS=$ac_save_LIBS
-
-ac_save_LIBS=$LIBS
-AC_SEARCH_LIBS(shm_open, rt,
-               [AC_DEFINE(HAVE_SHM_OPEN, 1, [Define to 1 if you have the `shm_open' function.])
                 test "$ac_res" = "none required" || AC_SUBST(RT_LIBS,"$ac_res")])
 LIBS=$ac_save_LIBS
 
@@ -2577,6 +2560,8 @@ WINE_CONFIG_MAKEFILE(dlls/d3dx9_42)
 WINE_CONFIG_MAKEFILE(dlls/d3dx9_43)
 WINE_CONFIG_MAKEFILE(dlls/d3dxof)
 WINE_CONFIG_MAKEFILE(dlls/d3dxof/tests)
+WINE_CONFIG_MAKEFILE(dlls/dataexchange)
+WINE_CONFIG_MAKEFILE(dlls/dataexchange/tests)
 WINE_CONFIG_MAKEFILE(dlls/davclnt)
 WINE_CONFIG_MAKEFILE(dlls/dbgeng)
 WINE_CONFIG_MAKEFILE(dlls/dbgeng/tests)
@@ -2715,6 +2700,8 @@ WINE_CONFIG_MAKEFILE(dlls/icmp)
 WINE_CONFIG_MAKEFILE(dlls/ieframe)
 WINE_CONFIG_MAKEFILE(dlls/ieframe/tests)
 WINE_CONFIG_MAKEFILE(dlls/ieproxy)
+WINE_CONFIG_MAKEFILE(dlls/iertutil)
+WINE_CONFIG_MAKEFILE(dlls/iertutil/tests)
 WINE_CONFIG_MAKEFILE(dlls/ifsmgr.vxd,enable_win16)
 WINE_CONFIG_MAKEFILE(dlls/imaadp32.acm)
 WINE_CONFIG_MAKEFILE(dlls/imagehlp)
@@ -3313,6 +3300,7 @@ WINE_CONFIG_MAKEFILE(dlls/wldp/tests)
 WINE_CONFIG_MAKEFILE(dlls/wmadmod)
 WINE_CONFIG_MAKEFILE(dlls/wmasf)
 WINE_CONFIG_MAKEFILE(dlls/wmi)
+WINE_CONFIG_MAKEFILE(dlls/wmilib.sys)
 WINE_CONFIG_MAKEFILE(dlls/wmiutils)
 WINE_CONFIG_MAKEFILE(dlls/wmiutils/tests)
 WINE_CONFIG_MAKEFILE(dlls/wmp)
@@ -3398,6 +3386,7 @@ WINE_CONFIG_MAKEFILE(dlls/xtajit64)
 WINE_CONFIG_MAKEFILE(fonts)
 WINE_CONFIG_MAKEFILE(include)
 WINE_CONFIG_MAKEFILE(libs/adsiid)
+WINE_CONFIG_MAKEFILE(libs/capstone)
 WINE_CONFIG_MAKEFILE(libs/dmoguids)
 WINE_CONFIG_MAKEFILE(libs/dxerr8)
 WINE_CONFIG_MAKEFILE(libs/dxerr9)
@@ -3423,7 +3412,6 @@ WINE_CONFIG_MAKEFILE(libs/wmcodecdspuuid)
 WINE_CONFIG_MAKEFILE(libs/xml2)
 WINE_CONFIG_MAKEFILE(libs/xslt)
 WINE_CONFIG_MAKEFILE(libs/zlib)
-WINE_CONFIG_MAKEFILE(libs/zydis)
 WINE_CONFIG_MAKEFILE(loader)
 WINE_CONFIG_MAKEFILE(nls)
 WINE_CONFIG_MAKEFILE(po)
@@ -3508,6 +3496,7 @@ WINE_CONFIG_MAKEFILE(programs/services)
 WINE_CONFIG_MAKEFILE(programs/services/tests)
 WINE_CONFIG_MAKEFILE(programs/setx)
 WINE_CONFIG_MAKEFILE(programs/shutdown)
+WINE_CONFIG_MAKEFILE(programs/sort)
 WINE_CONFIG_MAKEFILE(programs/spoolsv)
 WINE_CONFIG_MAKEFILE(programs/start)
 WINE_CONFIG_MAKEFILE(programs/subst)
@@ -3666,7 +3655,24 @@ else
 fonts \
 loader/wine.inf \
 nls \
+programs/msidb/msidb \
+programs/msiexec/msiexec \
+programs/notepad/notepad \
+programs/regedit/regedit \
+programs/regsvr32/regsvr32 \
+programs/wineboot/wineboot \
+programs/winecfg/winecfg \
+programs/wineconsole/wineconsole \
+programs/winedbg/winedbg \
+programs/winefile/winefile \
+programs/winemine/winemine \
+programs/winepath/winepath \
 server/wineserver"
+
+    case $host_os in
+      cygwin*|mingw32*|darwin*|macosx*|linux-android*) ;;
+      *) TOP_INSTALL_LIB="$TOP_INSTALL_LIB loader/wine.desktop" ;;
+    esac
 fi
 
 dnl Rules for cleaning
@@ -3677,16 +3683,6 @@ WINE_APPEND_RULE(
 maintainer-clean::
 	rm -f configure include/config.h.in])
 
-dnl Crossover hacks
-
-WINE_APPEND_RULE(
-[install-image: install-lib
-# Get rid of the files we don't want in the image
-	rm -rf \$(DESTDIR)\$(mandir)
-# Rename the wine loader (don't ask)
-	test x\$(filter wine,\$(WINELOADER_PROGRAMS)) = x || mv \$(DESTDIR)\$(bindir)/wine \$(DESTDIR)\$(bindir)/wineloader
-	test x\$(filter wine64,\$(WINELOADER_PROGRAMS)) = x || mv \$(DESTDIR)\$(bindir)/wine64 \$(DESTDIR)\$(bindir)/wineloader64])
-
 dnl Rules for generated source files
 
 WINE_APPEND_RULE(
@@ -3696,9 +3692,9 @@ programs/winetest/build.rc: dummy
 	@build=\"STRINGTABLE { 1 \\\"\`GIT_DIR=${wine_srcdir}.git git rev-parse HEAD 2>/dev/null\`\\\" }\" && (echo \$\$build | cmp -s - \$[@]) || echo \$\$build >\$[@] || (rm -f \$[@] && exit 1)
 programs/winetest/build.nfo:
 	@-\$(CC) -v 2>\$[@]
-dlls/wineandroid.drv/wineandroid.drv-debug.aar: dlls/wineandroid.drv/build.gradle ${wine_srcdir}/dlls/wineandroid.drv/AndroidManifest.xml ${wine_srcdir}/dlls/wineandroid.drv/WineDriver.java ${wine_srcdir}/dlls/wineandroid.drv/WineProvider.java ${wine_srcdir}/dlls/wineandroid.drv/wine.svg ${wine_srcdir}/dlls/wineandroid.drv/strings.xml
-	cd dlls/wineandroid.drv && \`cd ../.. && cd $srcdir && pwd\`/gradlew -q -Psrcdir=$srcdir assembleDebug
-	mv dlls/wineandroid.drv/build/outputs/aar/wineandroid.drv-debug.aar \$[@]])
+dlls/wineandroid.drv/wine-debug.apk: dlls/wineandroid.drv/build.gradle ${wine_srcdir}dlls/wineandroid.drv/AndroidManifest.xml ${wine_srcdir}dlls/wineandroid.drv/WineActivity.java ${wine_srcdir}dlls/wineandroid.drv/wine.svg
+	cd dlls/wineandroid.drv && gradle -q -Psrcdir=$srcdir assembleDebug
+	mv dlls/wineandroid.drv/build/outputs/apk/wine-debug.apk \$[@]])
 
 dnl Misc rules
 

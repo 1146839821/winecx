@@ -167,10 +167,6 @@ C_ASSERT( HEAP_MAX_FREE_BLOCK_SIZE >= HEAP_MAX_BLOCK_REGION_SIZE );
 
 /* minimum size to start allocating large blocks */
 #define HEAP_MIN_LARGE_BLOCK_SIZE  (HEAP_MAX_USED_BLOCK_SIZE - 0x1000)
-/* extra size to add at the end of block for tail checking */
-/* CW HACK 18582: always add a tail to heap allocs to fix Rockstar Launcher installer */
-#define HEAP_TAIL_EXTRA_SIZE(flags) \
-    ALIGNMENT
 
 #define FREE_LIST_LINEAR_BITS 2
 #define FREE_LIST_LINEAR_MASK ((1 << FREE_LIST_LINEAR_BITS) - 1)
@@ -587,13 +583,13 @@ static inline ULONG heap_get_flags( const struct heap *heap, ULONG flags )
 static inline void heap_lock( struct heap *heap, ULONG flags )
 {
     if (flags & HEAP_NO_SERIALIZE) return;
-    enter_critical_section( &heap->cs );
+    RtlEnterCriticalSection( &heap->cs );
 }
 
 static inline void heap_unlock( struct heap *heap, ULONG flags )
 {
     if (flags & HEAP_NO_SERIALIZE) return;
-    leave_critical_section( &heap->cs );
+    RtlLeaveCriticalSection( &heap->cs );
 }
 
 static void heap_set_status( const struct heap *heap, ULONG flags, NTSTATUS status )
@@ -765,8 +761,7 @@ static struct heap *unsafe_heap_from_handle( HANDLE handle, ULONG flags, ULONG *
     if (!heap || (heap->magic != HEAP_MAGIC))
     {
         ERR( "Invalid handle %p!\n", handle );
-        NtTerminateProcess( 0, 0 );
-        NtTerminateProcess( GetCurrentProcess(), 0 );
+        return NULL;
     }
     if (heap->flags & HEAP_VALIDATE_ALL)
     {
@@ -1584,9 +1579,9 @@ HANDLE WINAPI RtlCreateHeap( ULONG flags, void *addr, SIZE_T total_size, SIZE_T 
     /* link it into the per-process heap list */
     if (process_heap)
     {
-        enter_critical_section( &process_heap->cs );
+        RtlEnterCriticalSection( &process_heap->cs );
         list_add_head( &process_heap->entry, &heap->entry );
-        leave_critical_section( &process_heap->cs );
+        RtlLeaveCriticalSection( &process_heap->cs );
     }
     else if (!addr)
     {
@@ -1645,9 +1640,9 @@ HANDLE WINAPI RtlDestroyHeap( HANDLE handle )
     if (heap == process_heap) return handle; /* cannot delete the main process heap */
 
     /* remove it from the per-process list */
-    enter_critical_section( &process_heap->cs );
+    RtlEnterCriticalSection( &process_heap->cs );
     list_remove( &heap->entry );
-    leave_critical_section( &process_heap->cs );
+    RtlLeaveCriticalSection( &process_heap->cs );
 
     heap->cs.DebugInfo->Spare[0] = 0;
     RtlDeleteCriticalSection( &heap->cs );
@@ -2538,7 +2533,7 @@ ULONG WINAPI RtlGetProcessHeaps( ULONG count, HANDLE *heaps )
     ULONG total = 1;  /* main heap */
     struct list *ptr;
 
-    enter_critical_section( &process_heap->cs );
+    RtlEnterCriticalSection( &process_heap->cs );
     LIST_FOR_EACH( ptr, &process_heap->entry ) total++;
     if (total <= count)
     {
@@ -2546,7 +2541,7 @@ ULONG WINAPI RtlGetProcessHeaps( ULONG count, HANDLE *heaps )
         LIST_FOR_EACH( ptr, &process_heap->entry )
             *heaps++ = LIST_ENTRY( ptr, struct heap, entry );
     }
-    leave_critical_section( &process_heap->cs );
+    RtlLeaveCriticalSection( &process_heap->cs );
     return total;
 }
 

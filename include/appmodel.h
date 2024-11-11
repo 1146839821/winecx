@@ -22,9 +22,6 @@
 extern "C" {
 #endif
 
-#define APPLICATION_USER_MODEL_ID_MAX_LENGTH 130
-#define APPLICATION_USER_MODEL_ID_MIN_LENGTH 21
-
 typedef enum AppPolicyMediaFoundationCodecLoading
 {
     AppPolicyMediaFoundationCodecLoading_All       = 0,

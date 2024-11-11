@@ -724,213 +724,6 @@ W32KAPI void window_surface_set_shape( struct window_surface *surface, HRGN shap
     window_surface_flush( surface );
 }
 
-
-/* CX HACK 23950 - START */
-
-struct shm_window_surface
-{
-    struct window_surface header;
-    HANDLE      section;
-    HWND        parent;
-    BITMAPINFO  info;
-};
-
-static struct shm_window_surface *get_shm_surface( struct window_surface *surface )
-{
-    return CONTAINING_RECORD(surface, struct shm_window_surface, header);
-}
-
-static void shm_surface_set_clip( struct window_surface *window_surface, const RECT *rects, UINT count )
-{
-    struct shm_window_surface *surface = get_shm_surface( window_surface );
-    FIXME( "(%p %p)\n", surface, rects );
-}
-
-static BOOL shm_surface_flush( struct window_surface *window_surface, const RECT *rect, const RECT *dirty,
-                               const BITMAPINFO *color_info, const void *color_bits, BOOL shape_changed,
-                               const BITMAPINFO *shape_info, const void *shape_bits )
-{
-    struct shm_window_surface *surface = get_shm_surface( window_surface );
-    struct flush_shm_surface_params params;
-
-    TRACE("%p\n", surface);
-
-    params.section = HandleToLong( surface->section );
-    params.hwnd = HandleToLong( surface->header.hwnd );
-    params.info = surface->info;
-    params.bounds = *dirty;
-
-    return send_message_timeout( surface->parent, WM_WINE_FLUSHSHMSURFACE, 0, (LPARAM)&params,
-                                 SMTO_ABORTIFHUNG | SMTO_BLOCK, 500, FALSE );
-}
-
-static void shm_surface_destroy( struct window_surface *window_surface )
-{
-    struct shm_window_surface *surface = get_shm_surface( window_surface );
-    OBJECT_ATTRIBUTES attr = { .Length = sizeof(OBJECT_ATTRIBUTES) };
-    HANDLE parent_process;
-    NTSTATUS status;
-    CLIENT_ID cid;
-    HANDLE h2;
-    DWORD pid;
-
-    TRACE( "freeing %p\n", surface );
-    if (surface->section)
-    {
-        get_window_thread( surface->parent, &pid );
-        cid.UniqueProcess = ULongToHandle(pid);
-        cid.UniqueThread  = 0;
-        status = NtOpenProcess( &parent_process, PROCESS_DUP_HANDLE, &attr, &cid );
-        if (status)
-        {
-            ERR( "NtOpenProcess failed: %x\n", status );
-        }
-        else
-        {
-            status = NtDuplicateObject( parent_process, surface->section, GetCurrentProcess(), &h2,
-                                        0, FALSE, DUPLICATE_CLOSE_SOURCE );
-            if (status)
-                ERR( "NtDuplicateObject failed: %x\n", status );
-            else
-                NtClose(h2);
-
-            NtClose(parent_process);
-        }
-    }
-}
-
-static const struct window_surface_funcs shm_surface_funcs =
-{
-    shm_surface_set_clip,
-    shm_surface_flush,
-    shm_surface_destroy,
-};
-
-struct window_surface *create_shm_surface( HWND window, HWND parent, const RECT *visible_rect,
-                                           struct window_surface *old_surface )
-{
-    OBJECT_ATTRIBUTES attr = { .Length = sizeof(OBJECT_ATTRIBUTES) };
-    struct shm_window_surface *surface;
-    LARGE_INTEGER section_size;
-    HANDLE parent_process;
-    CLIENT_ID cid;
-    BITMAPINFO info;
-    HANDLE mapping;
-    unsigned int status;
-    HBITMAP bitmap;
-    DWORD pid;
-    RECT r;
-
-    TRACE( "hwnd %p parent %p\n", window, parent );
-
-    r = *visible_rect;
-    OffsetRect( &r, -r.left, -r.top );
-    if (IsRectEmpty( &r )) return NULL;
-
-    if (old_surface && old_surface->funcs == &shm_surface_funcs)
-    {
-        surface = get_shm_surface( old_surface );
-        if (EqualRect( &surface->header.rect, &r ))
-        {
-            TRACE( "reusing surface %p\n", surface );
-            window_surface_add_ref( old_surface );
-            return old_surface;
-        }
-    }
-
-    info.bmiHeader.biSize        = sizeof(info.bmiHeader);
-    info.bmiHeader.biWidth       = r.right;
-    info.bmiHeader.biHeight      = -r.bottom;
-    info.bmiHeader.biPlanes      = 1;
-    info.bmiHeader.biBitCount    = 32;
-    info.bmiHeader.biSizeImage   = get_dib_image_size( &info );
-    info.bmiHeader.biCompression = BI_RGB;
-    info.bmiHeader.biClrUsed     = 0;
-
-    section_size.QuadPart = info.bmiHeader.biSizeImage;
-    status = NtCreateSection( &mapping,
-                              GENERIC_READ | SECTION_MAP_READ | SECTION_MAP_WRITE,
-                              NULL, &section_size, PAGE_READWRITE, SEC_COMMIT, 0 );
-    if (status)
-    {
-        ERR( "NtCreateSection failed: %x\n", status );
-        return NULL;
-    }
-
-    if (!(bitmap = NtGdiCreateDIBSection( 0, mapping, 0, &info, DIB_RGB_COLORS, 0, 0, 0, NULL )))
-    {
-        ERR( "NtGdiCreateDIBSection failed: %x\n", status );
-        NtClose( mapping );
-        return NULL;
-    }
-
-    surface = (struct shm_window_surface *)window_surface_create( sizeof(*surface), &shm_surface_funcs, window, &r, &info, bitmap );
-    surface->info = info;
-
-    TRACE( "crating surface %p for visible_rect %s of window %p\n", surface,
-           wine_dbgstr_rect(visible_rect), window );
-
-    surface->parent = parent;
-
-    get_window_thread( parent, &pid );
-    cid.UniqueProcess = ULongToHandle(pid);
-    cid.UniqueThread  = 0;
-    status = NtOpenProcess( &parent_process, PROCESS_DUP_HANDLE, &attr, &cid );
-    if (status)
-    {
-        ERR( "NtDuplicateObject failed: %x\n", status );
-        window_surface_release( &surface->header );
-        NtClose( mapping );
-        return NULL;
-    }
-
-    status = NtDuplicateObject( GetCurrentProcess(), mapping, parent_process,
-                                &surface->section, FILE_MAP_READ, FALSE, 0 );
-    NtClose( parent_process );
-    NtClose( mapping );
-    if (status)
-    {
-        ERR( "NtDuplicateObject failed: %x\n", status );
-        window_surface_release( &surface->header );
-        return NULL;
-    }
-
-    return &surface->header;
-}
-
-void process_surface_message( struct flush_shm_surface_params *params )
-{
-    HANDLE mapping = LongToHandle( params->section );
-    HWND hwnd = LongToHandle( params->hwnd );
-    SIZE_T view_size = 0;
-    unsigned int height;
-    unsigned int status;
-    void *bits = NULL;
-    HDC hdc;
-
-    TRACE( "Flushing %p window surface %s\n", hwnd, wine_dbgstr_rect( &params->bounds ));
-
-    status = NtMapViewOfSection( mapping, GetCurrentProcess(), (void**)&bits,
-                                 0, 0, NULL, &view_size, ViewShare, 0, PAGE_READONLY );
-    if (!bits)
-    {
-        ERR( "NtMapViewOfSection failed: %x\n", status );
-        return;
-    }
-    height = abs( params->info.bmiHeader.biHeight );
-
-    hdc = NtUserGetDCEx( hwnd, NULL, DCX_CLIPSIBLINGS );
-    NtGdiSetDIBitsToDeviceInternal( hdc, params->bounds.left, params->bounds.top,
-                                    params->bounds.right - params->bounds.left, params->bounds.bottom - params->bounds.top,
-                                    params->bounds.left, height - params->bounds.bottom, 0, height,
-                                    bits, &params->info, DIB_RGB_COLORS, 0, 0, FALSE, NULL);
-    NtUserReleaseDC( hwnd, hdc );
-    NtUnmapViewOfSection( GetCurrentProcess(), bits );
-}
-
-/* CX HACK 23950 - END */
-
-
 /*******************************************************************
  *           register_window_surface
  *
@@ -1353,19 +1146,16 @@ static void make_dc_dirty( struct dce *dce )
  * rectangle. In addition, pWnd->parent DCEs may need to be updated if
  * DCX_CLIPCHILDREN flag is set.
  */
-void invalidate_dce( WND *win, const RECT *extra_rect )
+void invalidate_dce( WND *win, const RECT *old_rect )
 {
     UINT context;
-    RECT window_rect;
     struct dce *dce;
 
     if (!win->parent) return;
 
     context = set_thread_dpi_awareness_context( get_window_dpi_awareness_context( win->obj.handle ));
-    get_window_rect( win->obj.handle, &window_rect, get_thread_dpi() );
 
-    TRACE("%p parent %p %s (%s)\n",
-          win->obj.handle, win->parent, wine_dbgstr_rect(&window_rect), wine_dbgstr_rect(extra_rect) );
+    TRACE("%p parent %p, old_rect %s\n", win->obj.handle, win->parent, wine_dbgstr_rect(old_rect) );
 
     /* walk all DCEs and fixup non-empty entries */
 
@@ -1389,11 +1179,26 @@ void invalidate_dce( WND *win, const RECT *extra_rect )
         /* otherwise check if the window rectangle intersects this DCE window */
         if (win->parent == dce->hwnd || is_child( win->parent, dce->hwnd ))
         {
-            RECT dce_rect, tmp;
-            get_window_rect( dce->hwnd, &dce_rect, get_thread_dpi() );
-            if (intersect_rect( &tmp, &dce_rect, &window_rect ) ||
-                (extra_rect && intersect_rect( &tmp, &dce_rect, extra_rect )))
-                make_dc_dirty( dce );
+            RECT tmp, new_window_rect, old_window_rect;
+            struct window_rects rects;
+
+            /* get the parent client-relative old/new window rects */
+            get_window_rects( win->obj.handle, COORDS_PARENT, &rects, get_thread_dpi() );
+            old_window_rect = old_rect ? *old_rect : rects.window;
+            new_window_rect = rects.window;
+
+            /* get the DCE window rect in client-relative coordinates */
+            get_window_rects( dce->hwnd, COORDS_CLIENT, &rects, get_thread_dpi() );
+            if (win->parent != dce->hwnd)
+            {
+                /* map the window rects from parent client-relative to DCE window client-relative coordinates */
+                map_window_points( win->parent, dce->hwnd, (POINT *)&new_window_rect, 2, get_thread_dpi() );
+                map_window_points( win->parent, dce->hwnd, (POINT *)&old_window_rect, 2, get_thread_dpi() );
+            }
+
+            /* check if any of the window rects intersects with the DCE window rect */
+            if (intersect_rect( &tmp, &rects.window, &old_window_rect )) make_dc_dirty( dce );
+            else if (intersect_rect( &tmp, &rects.window, &new_window_rect )) make_dc_dirty( dce );
         }
     }
     set_thread_dpi_awareness_context( context );
@@ -1819,22 +1624,20 @@ static BOOL send_erase( HWND hwnd, UINT flags, HRGN client_rgn,
  *
  * Move the window bits when a window is resized, or moved within a parent window.
  */
-void move_window_bits( HWND hwnd, const RECT *visible_rect, const RECT *old_visible_rect,
-                       const RECT *window_rect, const RECT *valid_rects )
+void move_window_bits( HWND hwnd, const struct window_rects *rects, const RECT *valid_rects )
 {
-    RECT dst = valid_rects[0];
-    RECT src = valid_rects[1];
+    RECT dst = valid_rects[0], src = valid_rects[1];
 
-    if (src.left - old_visible_rect->left != dst.left - visible_rect->left ||
-        src.top - old_visible_rect->top != dst.top - visible_rect->top)
+    if (src.left - rects->visible.left != dst.left - rects->visible.left ||
+        src.top - rects->visible.top != dst.top - rects->visible.top)
     {
         UINT flags = UPDATE_NOCHILDREN | UPDATE_CLIPCHILDREN;
         HRGN rgn = get_update_region( hwnd, &flags, NULL );
         HDC hdc = NtUserGetDCEx( hwnd, rgn, DCX_CACHE | DCX_WINDOW | DCX_EXCLUDERGN );
 
         TRACE( "copying %s -> %s\n", wine_dbgstr_rect( &src ), wine_dbgstr_rect( &dst ));
-        OffsetRect( &src, -window_rect->left, -window_rect->top );
-        OffsetRect( &dst, -window_rect->left, -window_rect->top );
+        OffsetRect( &src, -rects->window.left, -rects->window.top );
+        OffsetRect( &dst, -rects->window.left, -rects->window.top );
 
         NtGdiStretchBlt( hdc, dst.left, dst.top, dst.right - dst.left, dst.bottom - dst.top,
                          hdc, src.left, src.top, src.right - src.left, src.bottom - src.top, SRCCOPY, 0 );

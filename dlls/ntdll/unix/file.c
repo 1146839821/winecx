@@ -1344,8 +1344,6 @@ static BOOL is_hidden_file( const char *name )
     p = name + strlen( name );
     while (p > name && p[-1] == '/') p--;
     while (p > name && p[-1] != '/') p--;
-    /* CrossOver Hack for bug 15207 - hide files starting in ~$ */
-    if (p[0] == '~' && p[1] == '$') return TRUE;
     if (*p++ != '.') return FALSE;
     if (!*p || *p == '/') return FALSE;  /* "." directory */
     if (*p++ != '.') return TRUE;
@@ -1366,49 +1364,31 @@ static ULONG hash_short_file_name( const WCHAR *name, int length, LPWSTR buffer 
 {
     static const char hash_chars[32] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345";
 
-    LPCWSTR p, ext, hash_end, end = name + length;
+    LPCWSTR p, ext, end = name + length;
     LPWSTR dst;
     unsigned short hash;
     int i;
-
-    /* Find last dot for start of the extension */
-    for (p = name + 1, ext = NULL; p < end - 1; p++) if (*p == '.') ext = p;
-
-    /* don't include the standard 3 char .ext in the filename hash */
-    hash_end = end;
-    if (ext && ((end - ext) == 4 ))
-    {
-        /*
-         * FIXME: CodeWeavers hack alert
-         * The next five lines are a nasty hack to only activate this
-         * (more correct behaviour) for Quicken files for the moment.
-         * We don't want to break our install base of programs that have
-         * shortfile names stored in the registry or elsewhere.
-         */
-        WCHAR szqdf[]={'.','q','d','f'};
-        WCHAR szqsd[]={'.','q','s','d'};
-        WCHAR szqel[]={'.','q','e','l'};
-        WCHAR szqph[]={'.','q','p','h'};
-        if (!wcsnicmp(ext,szqdf,4) || !wcsnicmp(ext,szqsd,4) ||
-            !wcsnicmp(ext,szqph,4) || !wcsnicmp(ext,szqel,4))
-            hash_end = ext;
-    }
 
     /* Compute the hash code of the file name */
     /* If you know something about hash functions, feel free to */
     /* insert a better algorithm here... */
     if (!is_case_sensitive)
     {
-        for (p = name, hash = 0xbeef; p < hash_end - 1; p++)
+        for (p = name, hash = 0xbeef; p < end - 1; p++)
             hash = (hash<<3) ^ (hash>>5) ^ towlower(*p) ^ (towlower(p[1]) << 8);
         hash = (hash<<3) ^ (hash>>5) ^ towlower(*p); /* Last character */
     }
     else
     {
-        for (p = name, hash = 0xbeef; p < hash_end - 1; p++)
+        for (p = name, hash = 0xbeef; p < end - 1; p++)
             hash = (hash << 3) ^ (hash >> 5) ^ *p ^ (p[1] << 8);
         hash = (hash << 3) ^ (hash >> 5) ^ *p;  /* Last character */
     }
+
+    /* Find last dot for start of the extension */
+    p = name;
+    while (*p == '.') ++p;
+    for (p = p + 1, ext = NULL; p < end - 1; p++) if (*p == '.') ext = p;
 
     /* Copy first 4 chars, replacing invalid chars with '_' */
     for (i = 4, p = name, dst = buffer; i > 0; p++)
@@ -3187,31 +3167,16 @@ static inline int get_dos_prefix_len( const UNICODE_STRING *name )
 {
     static const WCHAR nt_prefixW[] = {'\\','?','?','\\'};
     static const WCHAR dosdev_prefixW[] = {'\\','D','o','s','D','e','v','i','c','e','s','\\'};
-    static const WCHAR globalrootW[] = {'\\','?','?','\\','G','l','o','b','a','l','R','o','o','t'};
-    int prefix_len = 0;
-    WCHAR *prefix;
-    USHORT length;
 
-    prefix = name->Buffer;
-    length = name->Length;
+    if (name->Length >= sizeof(nt_prefixW) &&
+        !memcmp( name->Buffer, nt_prefixW, sizeof(nt_prefixW) ))
+        return ARRAY_SIZE( nt_prefixW );
 
-    if (length >= ARRAY_SIZE( globalrootW ) &&
-        !wcsnicmp( prefix, globalrootW, ARRAY_SIZE( globalrootW )))
-    {
-        WARN("Stripping off GlobalRoot prefix.\n");
-        prefix += ARRAY_SIZE( globalrootW );
-        prefix_len += ARRAY_SIZE( globalrootW );
-        length -= ARRAY_SIZE( globalrootW );
-    }
+    if (name->Length >= sizeof(dosdev_prefixW) &&
+        !wcsnicmp( name->Buffer, dosdev_prefixW, ARRAY_SIZE( dosdev_prefixW )))
+        return ARRAY_SIZE( dosdev_prefixW );
 
-    if (length >= sizeof(nt_prefixW) &&
-        !memcmp( prefix, nt_prefixW, sizeof(nt_prefixW) ))
-        prefix_len += ARRAY_SIZE( nt_prefixW );
-    else if (length >= sizeof(dosdev_prefixW) &&
-        !wcsnicmp( prefix, dosdev_prefixW, ARRAY_SIZE( dosdev_prefixW )))
-        prefix_len += ARRAY_SIZE( dosdev_prefixW );
-
-    return prefix_len;
+    return 0;
 }
 
 
@@ -4011,22 +3976,22 @@ static NTSTATUS unmount_device( HANDLE handle )
             if ((mount_point = get_device_mount_point( st.st_rdev )))
             {
 #ifdef __APPLE__
-                static const char umount[] = "diskutil unmount >/dev/null 2>&1 ";
+                static char diskutil[] = "diskutil";
+                static char unmount[] = "unmount";
+                char *argv[4] = {diskutil, unmount, mount_point, NULL};
 #else
-                static const char umount[] = "umount >/dev/null 2>&1 ";
+                static char umount[] = "umount";
+                char *argv[3] = {umount, mount_point, NULL};
 #endif
-                char *cmd;
-                if (asprintf( &cmd, "%s%s", umount, mount_point ) != -1)
-                {
-                    system( cmd );
-                    free( cmd );
+                __wine_unix_spawnvp( argv, TRUE );
 #ifdef linux
-                    /* umount will fail to release the loop device since we still have
-                       a handle to it, so we release it here */
-                    if (major(st.st_rdev) == LOOP_MAJOR) ioctl( unix_fd, 0x4c01 /*LOOP_CLR_FD*/, 0 );
+                /* umount will fail to release the loop device since we still have
+                    a handle to it, so we release it here */
+                if (major(st.st_rdev) == LOOP_MAJOR) ioctl( unix_fd, 0x4c01 /*LOOP_CLR_FD*/, 0 );
 #endif
-                }
-                free( mount_point );
+                /* Add in a small delay. Without this subsequent tasks
+                    like IOCTL_STORAGE_EJECT_MEDIA might fail. */
+                usleep( 100000 );
             }
         }
         if (needs_close) close( unix_fd );
@@ -5050,29 +5015,18 @@ void release_fileio( struct async_fileio *io )
 struct async_fileio *alloc_fileio( DWORD size, async_callback_t callback, HANDLE handle )
 {
     /* first free remaining previous fileinfos */
-    struct async_fileio *old_io = InterlockedExchangePointer( (void **)&fileio_freelist, NULL );
-    struct async_fileio *io = NULL;
+    struct async_fileio *io = InterlockedExchangePointer( (void **)&fileio_freelist, NULL );
 
-    while (old_io)
+    while (io)
     {
-        if (!io && old_io->size >= size && old_io->size <= max(4096, 4 * size))
-        {
-            io     = old_io;
-            size   = old_io->size;
-            old_io = old_io->next;
-        }
-        else
-        {
-            struct async_fileio *next = old_io->next;
-            free( old_io );
-            old_io = next;
-        }
+        struct async_fileio *next = io->next;
+        free( io );
+        io = next;
     }
 
-    if (io || (io = malloc( size )))
+    if ((io = malloc( size )))
     {
         io->callback = callback;
-        io->size     = size;
         io->handle   = handle;
     }
     return io;
@@ -5507,8 +5461,10 @@ void file_complete_async( HANDLE handle, unsigned int options, HANDLE event, PIO
 
     set_sync_iosb( io, status, information, options );
     if (event) NtSetEvent( event, NULL );
-    if (apc) NtQueueApcThread( GetCurrentThread(), (PNTAPCFUNC)apc, (ULONG_PTR)apc_user, iosb_ptr, 0 );
-    else if (apc_user) add_completion( handle, (ULONG_PTR)apc_user, status, information, FALSE );
+    if (apc)
+        NtQueueApcThread( GetCurrentThread(), (PNTAPCFUNC)apc, (ULONG_PTR)apc_user, iosb_ptr, 0 );
+    else if (apc_user && !(options & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT)))
+        add_completion( handle, (ULONG_PTR)apc_user, status, information, FALSE );
 }
 
 
@@ -5526,22 +5482,6 @@ static unsigned int set_pending_write( HANDLE device )
     return status;
 }
 
-static BOOL is_quickenpatch(void)
-{
-    static const WCHAR qkn[] = {'q','u','i','c','k','e','n','P','a','t','c','h','.','e','x','e',0};
-    WCHAR *path = NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer;
-    DWORD len = sizeof(qkn)/sizeof(qkn[0]) - 1, len2 = wcslen(path);
-    return (len <= len2 && !wcsicmp( path + len2 - len, qkn ));
-}
-
-
-/* CW HACK 14391 */
-NTSTATUS WINAPI __wine_rpc_NtReadFile( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc_user,
-                                IO_STATUS_BLOCK *io, void *buffer, ULONG length,
-                                LARGE_INTEGER *offset, ULONG *key )
-{
-    return NtReadFile( handle, event, apc, apc_user, io, buffer, length, offset, key );
-}
 
 /******************************************************************************
  *              NtReadFile   (NTDLL.@)
@@ -5588,9 +5528,6 @@ NTSTATUS WINAPI NtReadFile( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, vo
             /* async I/O doesn't make sense on regular files */
             while ((result = virtual_locked_pread( unix_handle, buffer, length, offset->QuadPart )) == -1)
             {
-                /* CrossOver hack 14664 */
-                if (errno == EFAULT && is_quickenpatch() && virtual_check_buffer_for_write( buffer, length ))
-                    continue;
                 if (errno != EINTR)
                 {
                     status = errno_to_status( errno );
@@ -5670,9 +5607,6 @@ NTSTATUS WINAPI NtReadFile( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, vo
         else if (errno != EAGAIN)
         {
             if (errno == EINTR) continue;
-            /* CrossOver hack 14664 */
-            if (errno == EFAULT && is_quickenpatch() && virtual_check_buffer_for_write( buffer, length ))
-                continue;
             if (!total) status = errno_to_status( errno );
             goto err;
         }
@@ -5746,7 +5680,8 @@ err:
     ret_status = async_read && type == FD_TYPE_FILE && (status == STATUS_SUCCESS || status == STATUS_END_OF_FILE)
             ? STATUS_PENDING : status;
 
-    if (send_completion) add_completion( handle, cvalue, status, total, ret_status == STATUS_PENDING );
+    if (send_completion && async_read)
+        add_completion( handle, cvalue, status, total, ret_status == STATUS_PENDING );
     return ret_status;
 }
 
@@ -6047,7 +5982,8 @@ err:
     }
 
     ret_status = async_write && type == FD_TYPE_FILE && status == STATUS_SUCCESS ? STATUS_PENDING : status;
-    if (send_completion) add_completion( handle, cvalue, status, total, ret_status == STATUS_PENDING );
+    if (send_completion && async_write)
+        add_completion( handle, cvalue, status, total, ret_status == STATUS_PENDING );
     return ret_status;
 }
 

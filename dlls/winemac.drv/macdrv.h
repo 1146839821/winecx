@@ -44,17 +44,8 @@ extern BOOL allow_vsync;
 extern BOOL allow_set_gamma;
 extern BOOL allow_software_rendering;
 
-/* CrossOver Hack 14364 */
-extern BOOL force_backing_store;
-
 extern UINT64 app_icon_callback;
 extern UINT64 app_quit_request_callback;
-extern UINT64 dnd_query_drag_callback;
-extern UINT64 dnd_query_drop_callback;
-extern UINT64 dnd_query_exited_callback;
-extern UINT64 regcreateopenkeyexa_callback;
-extern UINT64 regqueryvalueexa_callback;
-extern UINT64 regsetvalueexa_callback;
 
 extern const char* debugstr_cf(CFTypeRef t);
 
@@ -144,8 +135,6 @@ extern LRESULT macdrv_NotifyIcon(HWND hwnd, UINT msg, NOTIFYICONDATAW *data);
 extern void macdrv_CleanupIcons(HWND hwnd);
 extern LRESULT macdrv_DesktopWindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
 extern void macdrv_DestroyWindow(HWND hwnd);
-extern NTSTATUS macdrv_SetCurrentProcessExplicitAppUserModelID(LPCWSTR aumid);  /* CW Hack 22310 */
-extern NTSTATUS macdrv_GetCurrentProcessExplicitAppUserModelID(LPWSTR buffer, INT size);  /* CW Hack 22310 */
 extern void macdrv_SetDesktopWindow(HWND hwnd);
 extern void macdrv_SetFocus(HWND hwnd);
 extern void macdrv_SetLayeredWindowAttributes(HWND hwnd, COLORREF key, BYTE alpha,
@@ -161,7 +150,7 @@ extern LRESULT macdrv_WindowMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
 extern BOOL macdrv_WindowPosChanging(HWND hwnd, UINT swp_flags, BOOL shaped, const struct window_rects *rects);
 extern BOOL macdrv_GetWindowStyleMasks(HWND hwnd, UINT style, UINT ex_style, UINT *style_mask, UINT *ex_style_mask);
 extern BOOL macdrv_CreateWindowSurface(HWND hwnd, BOOL layered, const RECT *surface_rect, struct window_surface **surface);
-extern void macdrv_WindowPosChanged(HWND hwnd, HWND insert_after, UINT swp_flags, BOOL fullscreen,
+extern void macdrv_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UINT swp_flags, BOOL fullscreen,
                                     const struct window_rects *new_rects, struct window_surface *surface);
 extern void macdrv_DestroyCursorIcon(HCURSOR cursor);
 extern BOOL macdrv_GetCursorPos(LPPOINT pos);
@@ -204,17 +193,14 @@ struct macdrv_win_data
     unsigned int        swap_interval : 1;      /* GL swap interval for window */
 };
 
-extern struct macdrv_win_data *get_win_data(HWND hwnd) __attribute__((visibility("default")));
-extern void release_win_data(struct macdrv_win_data *data) __attribute__((visibility("default")));
+extern struct macdrv_win_data *get_win_data(HWND hwnd);
+extern void release_win_data(struct macdrv_win_data *data);
 extern void init_win_context(void);
 extern macdrv_window macdrv_get_cocoa_window(HWND hwnd, BOOL require_on_screen);
 extern RGNDATA *get_region_data(HRGN hrgn, HDC hdc_lptodp);
 extern void activate_on_following_focus(void);
 
 extern void macdrv_handle_event(const macdrv_event *event);
-
-extern macdrv_view macdrv_get_cocoa_view(HWND hwnd) __attribute__((visibility("default")));
-extern macdrv_view macdrv_get_client_cocoa_view(HWND hwnd) __attribute__((visibility("default")));
 
 extern void macdrv_window_close_requested(HWND hwnd);
 extern void macdrv_window_frame_changed(HWND hwnd, const macdrv_event *event);
@@ -244,8 +230,6 @@ extern void macdrv_release_capture(HWND hwnd, const macdrv_event *event);
 extern void macdrv_SetCapture(HWND hwnd, UINT flags);
 
 extern void macdrv_compute_keyboard_layout(struct macdrv_thread_data *thread_data);
-/* CrossOver Hack 10912: Mac Edit menu */
-extern void macdrv_edit_menu_command(const macdrv_event *event);
 extern void macdrv_keyboard_changed(const macdrv_event *event);
 extern void macdrv_key_event(HWND hwnd, const macdrv_event *event);
 extern void macdrv_hotkey_press(const macdrv_event *event);
@@ -274,13 +258,7 @@ extern void macdrv_status_item_mouse_move(const macdrv_event *event);
 extern void check_retina_status(void);
 extern void init_user_driver(void);
 
-/* unixlib interface */
-
-extern NTSTATUS macdrv_dnd_get_data(void *arg);
-extern NTSTATUS macdrv_dnd_get_formats(void *arg);
-extern NTSTATUS macdrv_dnd_have_format(void *arg);
-extern NTSTATUS macdrv_dnd_release(void *arg);
-extern NTSTATUS macdrv_dnd_retain(void *arg);
+extern struct format_entry *get_format_entries(CFTypeRef pasteboard, UINT *entries_size);
 
 /* user helpers */
 

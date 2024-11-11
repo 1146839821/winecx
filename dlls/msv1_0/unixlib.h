@@ -106,11 +106,6 @@ struct fork_params
     char **argv;
 };
 
-struct check_version_params
-{
-    const char *datadir;
-};
-
 enum ntlm_funcs
 {
     unix_chat,

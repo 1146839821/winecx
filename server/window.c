@@ -107,8 +107,6 @@ static const struct object_ops window_ops =
     no_add_queue,             /* add_queue */
     NULL,                     /* remove_queue */
     NULL,                     /* signaled */
-    NULL,                     /* get_esync_fd */
-    NULL,                     /* get_msync_idx */
     NULL,                     /* satisfied */
     no_signal,                /* signal */
     no_get_fd,                /* get_fd */
@@ -240,6 +238,21 @@ static inline void update_pixel_format_flags( struct window *win )
 {
     for (win = win->parent; win && win->parent; win = win->parent)
         win->paint_flags |= PAINT_PIXEL_FORMAT_CHILD;
+}
+
+static rectangle_t monitors_get_union_rect( struct winstation *winstation, int is_raw )
+{
+    struct monitor_info *monitor, *end;
+    rectangle_t rect = {0};
+
+    for (monitor = winstation->monitors, end = monitor + winstation->monitor_count; monitor < end; monitor++)
+    {
+        rectangle_t monitor_rect = is_raw ? monitor->raw : monitor->virt;
+        if (monitor->flags & (MONITOR_FLAG_CLONE | MONITOR_FLAG_INACTIVE)) continue;
+        union_rect( &rect, &rect, &monitor_rect );
+    }
+
+    return rect;
 }
 
 /* get the per-monitor DPI for a window */
@@ -501,10 +514,9 @@ struct process *get_top_window_owner( struct desktop *desktop )
 }
 
 /* get the top window size of a given desktop */
-void get_top_window_rectangle( struct desktop *desktop, rectangle_t *rect )
+void get_virtual_screen_rect( struct desktop *desktop, rectangle_t *rect, int is_raw )
 {
-    struct window *win = desktop->top_window;
-    *rect = win ? win->window_rect : empty_rect;
+    *rect = monitors_get_union_rect( desktop->winstation, is_raw );
 }
 
 /* post a message to the desktop window */
@@ -895,7 +907,7 @@ static int get_window_children_from_point( struct window *parent, int x, int y,
     return 1;
 }
 
-/* get handle of root of top-most window containing point */
+/* get handle of root of top-most window containing point (in absolute raw coords) */
 user_handle_t shallow_window_from_point( struct desktop *desktop, int x, int y )
 {
     struct window *ptr;
@@ -912,7 +924,7 @@ user_handle_t shallow_window_from_point( struct desktop *desktop, int x, int y )
     return desktop->top_window->handle;
 }
 
-/* return thread of top-most window containing point (in absolute coords) */
+/* return thread of top-most window containing point (in absolute raw coords) */
 struct thread *window_thread_from_point( user_handle_t scope, int x, int y )
 {
     struct window *win = get_user_object( scope, USER_WINDOW );
@@ -1106,9 +1118,7 @@ static void set_region_visible_rect( struct region *region, struct window *win )
 /* get the top-level window to clip against for a given window */
 static inline struct window *get_top_clipping_window( struct window *win )
 {
-    while ((!(win->paint_flags & PAINT_HAS_SURFACE) || !win->thread ||
-            win->thread->process != current->process) /* CX HACK 23950 */
-           && win->parent && !is_desktop_window(win->parent))
+    while (!(win->paint_flags & PAINT_HAS_SURFACE) && win->parent && !is_desktop_window(win->parent))
         win = win->parent;
     return win;
 }
@@ -2409,7 +2419,7 @@ DECL_HANDLER(set_window_pos)
     const rectangle_t *extra_rects = get_req_data();
     struct window *previous = NULL;
     struct window *top, *win = get_window( req->handle );
-    unsigned int flags = req->swp_flags;
+    unsigned int flags = req->swp_flags, old_style;
 
     if (!win) return;
     if (!win->parent) flags |= SWP_NOZORDER;  /* no Z order for the desktop */
@@ -2474,8 +2484,10 @@ DECL_HANDLER(set_window_pos)
     if (win->paint_flags & PAINT_HAS_PIXEL_FORMAT) update_pixel_format_flags( win );
 
     win->monitor_dpi = req->monitor_dpi;
+    old_style = win->style;
     set_window_pos( win, previous, flags, &window_rect, &client_rect,
                     &visible_rect, &surface_rect, &valid_rect );
+    if (win->style & old_style & WS_VISIBLE) update_cursor_pos( win->desktop );
 
     if (win->paint_flags & SET_WINPOS_LAYERED_WINDOW) validate_whole_window( win );
 

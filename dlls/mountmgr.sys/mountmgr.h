@@ -81,7 +81,7 @@ enum scsi_device_type
 
 struct scsi_info
 {
-    ULONG                 type;
+    enum scsi_device_type type;
     SCSI_ADDRESS          addr;
     UINT                  init_id;
     char                  driver[64];

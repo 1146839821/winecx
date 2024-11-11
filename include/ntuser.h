@@ -73,6 +73,11 @@ enum
     NtUserPostDDEMessage,
     NtUserRenderSynthesizedFormat,
     NtUserUnpackDDEMessage,
+    NtUserDragDropEnter,
+    NtUserDragDropLeave,
+    NtUserDragDropDrag,
+    NtUserDragDropDrop,
+    NtUserDragDropPost,
     NtUserCallCount
 };
 
@@ -299,6 +304,49 @@ struct unpack_dde_message_result
     LPARAM lparam;
 };
 
+/* NtUserDragDropEnter params */
+struct format_entry
+{
+    UINT format;
+    UINT size;
+    char data[1];
+};
+
+/* NtUserDragDropDrag params */
+struct drag_drop_drag_params
+{
+    HWND hwnd;
+    POINT point;
+    UINT effect;
+};
+
+/* NtUserDragDropDrop params */
+struct drag_drop_drop_params
+{
+    HWND hwnd;
+};
+
+/* NtUserDragDropPost params */
+
+/* avoid including shlobj.h */
+struct drop_files
+{
+    DWORD pFiles;
+    POINT pt;
+    BOOL  fNC;
+    BOOL  fWide;
+};
+
+struct drag_drop_post_params
+{
+    HWND hwnd;
+    UINT drop_size;
+    struct drop_files drop;
+    BYTE files[];
+};
+
+C_ASSERT( sizeof(struct drag_drop_post_params) == offsetof(struct drag_drop_post_params, files[0]) );
+
 /* DPI awareness contexts */
 #define MAKE_NTUSER_DPI_CONTEXT( awareness, version, dpi, flags )  ((awareness) | ((version) << 4) | ((dpi) << 8) | (flags))
 #define NTUSER_DPI_CONTEXT_GET_AWARENESS( ctx )                    ((ctx) & 0x0f)
@@ -349,6 +397,7 @@ enum
     NtUserSpyExit             = 0x0304,
     NtUserImeDriverCall       = 0x0305,
     NtUserSystemTrayCall      = 0x0306,
+    NtUserDragDropCall        = 0x0307,
 };
 
 /* NtUserThunkedMenuItemInfo codes */
@@ -509,15 +558,6 @@ enum associate_input_context_result
     AICR_FAILED,
 };
 
-/* CX HACK 23950 */
-struct flush_shm_surface_params
-{
-    BITMAPINFO info;
-    RECT bounds;
-    ULONG section;
-    ULONG hwnd;
-};
-
 /* internal messages codes */
 enum wine_internal_message
 {
@@ -530,8 +570,8 @@ enum wine_internal_message
     WM_WINE_SETACTIVEWINDOW,
     WM_WINE_KEYBOARD_LL_HOOK,
     WM_WINE_MOUSE_LL_HOOK,
+    WM_WINE_IME_NOTIFY,
     WM_WINE_UPDATEWINDOWSTATE,
-    WM_WINE_FLUSHSHMSURFACE, /* CX HACK 23950 */
     WM_WINE_FIRST_DRIVER_MSG = 0x80001000,  /* range of messages reserved for the USER driver */
     WM_WINE_CLIPCURSOR = 0x80001ff0, /* internal driver notification messages */
     WM_WINE_SETCURSOR,
@@ -575,6 +615,16 @@ enum wine_systray_call
     WINE_SYSTRAY_DOCK_INSERT,
     WINE_SYSTRAY_DOCK_CLEAR,
     WINE_SYSTRAY_DOCK_REMOVE,
+};
+
+/* NtUserDragDropCall calls */
+enum wine_drag_drop_call
+{
+    WINE_DRAG_DROP_ENTER,
+    WINE_DRAG_DROP_LEAVE,
+    WINE_DRAG_DROP_DRAG,
+    WINE_DRAG_DROP_DROP,
+    WINE_DRAG_DROP_POST,
 };
 
 #define WM_SYSTIMER  0x0118
@@ -640,6 +690,7 @@ W32KAPI DWORD   WINAPI NtUserDrawMenuBarTemp( HWND hwnd, HDC hdc, RECT *rect, HM
 W32KAPI BOOL    WINAPI NtUserEmptyClipboard(void);
 W32KAPI BOOL    WINAPI NtUserEnableMenuItem( HMENU handle, UINT id, UINT flags );
 W32KAPI BOOL    WINAPI NtUserEnableMouseInPointer( BOOL );
+W32KAPI BOOL    WINAPI NtUserEnableMouseInPointerForThread(void);
 W32KAPI BOOL    WINAPI NtUserEnableScrollBar( HWND hwnd, UINT bar, UINT flags );
 W32KAPI BOOL    WINAPI NtUserEndDeferWindowPosEx( HDWP hdwp, BOOL async );
 W32KAPI BOOL    WINAPI NtUserEndMenu(void);
@@ -765,6 +816,7 @@ W32KAPI ATOM    WINAPI NtUserRegisterClassExWOW( const WNDCLASSEXW *wc, UNICODE_
                                                  DWORD *wow );
 W32KAPI BOOL    WINAPI NtUserRegisterHotKey( HWND hwnd, INT id, UINT modifiers, UINT vk );
 W32KAPI BOOL    WINAPI NtUserRegisterRawInputDevices( const RAWINPUTDEVICE *devices, UINT device_count, UINT size );
+W32KAPI BOOL    WINAPI NtUserRegisterTouchPadCapable( BOOL capable );
 W32KAPI INT     WINAPI NtUserReleaseDC( HWND hwnd, HDC hdc );
 W32KAPI BOOL    WINAPI NtUserRemoveClipboardFormatListener( HWND hwnd );
 W32KAPI BOOL    WINAPI NtUserRemoveMenu( HMENU menu, UINT id, UINT flags );
@@ -1329,6 +1381,7 @@ enum
     NtUserCallHwndParam_SendHardwareInput,
     NtUserCallHwndParam_ExposeWindowSurface,
     NtUserCallHwndParam_GetWinMonitorDpi,
+    NtUserCallHwndParam_SetRawWindowPos,
     /* temporary exports */
     NtUserSetWindowStyle,
 };
@@ -1559,8 +1612,17 @@ static inline UINT NtUserGetWinMonitorDpi( HWND hwnd, MONITOR_DPI_TYPE type )
     return NtUserCallHwndParam( hwnd, type, NtUserCallHwndParam_GetWinMonitorDpi );
 }
 
-/* CW Hack 22310 */
-extern NTSTATUS WINAPI __wine_get_current_process_explicit_app_user_model_id( WCHAR *buffer, INT size );
-extern NTSTATUS WINAPI __wine_set_current_process_explicit_app_user_model_id( const WCHAR *aumid );
+struct set_raw_window_pos_params
+{
+    RECT rect;
+    UINT flags;
+    BOOL internal;
+};
+
+static inline BOOL NtUserSetRawWindowPos( HWND hwnd, RECT rect, UINT flags, BOOL internal )
+{
+    struct set_raw_window_pos_params params = {.rect = rect, .flags = flags, .internal = internal};
+    return NtUserCallHwndParam( hwnd, (UINT_PTR)&params, NtUserCallHwndParam_SetRawWindowPos );
+}
 
 #endif /* _NTUSER_ */

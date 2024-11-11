@@ -869,9 +869,6 @@ static BOOL unpack_message( HWND hwnd, UINT message, WPARAM *wparam, LPARAM *lpa
         memcpy( &ps->hook, &h_extra, sizeof(h_extra) );
         break;
     }
-    case WM_WINE_FLUSHSHMSURFACE: /* CX HACK 23950 */
-        minsize = sizeof(struct flush_shm_surface_params);
-        break;
     case CB_GETCOMBOBOXINFO:
     {
         COMBOBOXINFO cbi = { sizeof(COMBOBOXINFO) };
@@ -1241,9 +1238,6 @@ static size_t pack_message( HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
         push_data( data, (LPVOID)h_extra->lparam, sizeof(MSLLHOOKSTRUCT) );
         return 0;
     }
-    case WM_WINE_FLUSHSHMSURFACE: /* CX HACK 23950 */
-        push_data( data, (struct flush_shm_surface_params *)lparam, sizeof(struct flush_shm_surface_params) );
-        return 0;
     case WM_NCPAINT:
         if (wparam <= 1) return 0;
         FIXME( "WM_NCPAINT hdc packing not supported yet\n" );
@@ -2127,12 +2121,15 @@ static LRESULT handle_internal_message( HWND hwnd, UINT msg, WPARAM wparam, LPAR
     case WM_WINE_SETCURSOR:
         FIXME( "Unexpected non-hardware WM_WINE_SETCURSOR message\n" );
         return FALSE;
+    case WM_WINE_IME_NOTIFY:
+    {
+        HWND ime_hwnd = get_default_ime_window( hwnd );
+        if (!ime_hwnd || ime_hwnd == NtUserGetParent( hwnd )) return 0;
+        return send_message( ime_hwnd, WM_IME_NOTIFY, wparam, lparam );
+    }
     case WM_WINE_UPDATEWINDOWSTATE:
         update_window_state( hwnd );
         return 0;
-    case WM_WINE_FLUSHSHMSURFACE: /* CX HACK 23950 */
-        process_surface_message( (struct flush_shm_surface_params *)lparam );
-        return 1;
     default:
         if (msg >= WM_WINE_FIRST_DRIVER_MSG && msg <= WM_WINE_LAST_DRIVER_MSG)
             return user_driver->pWindowMessage( hwnd, msg, wparam, lparam );
@@ -2640,14 +2637,18 @@ static BOOL process_hardware_message( MSG *msg, UINT hw_id, const struct hardwar
                                       HWND hwnd_filter, UINT first, UINT last, BOOL remove )
 {
     struct ntuser_thread_info *thread_info = NtUserGetThreadInfo();
+    RECT rect = {msg->pt.x, msg->pt.y, msg->pt.x, msg->pt.y};
     UINT context;
     BOOL ret = FALSE;
 
     thread_info->msg_source.deviceType = msg_data->source.device;
     thread_info->msg_source.originId   = msg_data->source.origin;
 
-    /* hardware messages are always in physical coords */
+    /* hardware messages are always in raw physical coords */
     context = set_thread_dpi_awareness_context( NTUSER_DPI_PER_MONITOR_AWARE );
+    rect = map_rect_raw_to_virt( rect, get_thread_dpi() );
+    msg->pt.x = rect.left;
+    msg->pt.y = rect.top;
 
     if (msg->message == WM_INPUT || msg->message == WM_INPUT_DEVICE_CHANGE)
         ret = process_rawinput_message( msg, hw_id, msg_data );
@@ -2976,15 +2977,6 @@ int peek_message( MSG *msg, const struct peek_message_filter *filter )
                     info.msg.wParam = result->wparam;
                     info.msg.lParam = result->lparam;
                 }
-            }
-            /* CXHACK 19488 */
-            if (info.msg.message == WM_PAINT &&
-                    flags == (PM_REMOVE | PM_QS_INPUT | PM_QS_POSTMESSAGE | PM_QS_PAINT | PM_QS_SENDMESSAGE) &&
-                    (get_window_long( info.msg.hwnd, GWL_EXSTYLE ) & WS_EX_COMPOSITED ))
-            {
-                send_message( info.msg.hwnd, info.msg.message, info.msg.wParam, info.msg.lParam );
-                flags &= ~PM_QS_PAINT;
-                continue;
             }
             *msg = info.msg;
             msg->pt = point_phys_to_win_dpi( info.msg.hwnd, info.msg.pt );
@@ -4437,6 +4429,9 @@ LRESULT WINAPI NtUserMessageCall( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
 
     case NtUserSystemTrayCall:
         return system_tray_call( hwnd, msg, wparam, lparam, result_info );
+
+    case NtUserDragDropCall:
+        return drag_drop_call( hwnd, msg, wparam, lparam, result_info );
 
     default:
         FIXME( "%p %x %lx %lx %p %x %x\n", hwnd, msg, (long)wparam, lparam, result_info, (int)type, ansi );

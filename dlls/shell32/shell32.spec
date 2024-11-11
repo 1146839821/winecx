@@ -492,5 +492,3 @@
 @ stdcall -private StrStrIW(wstr wstr) shlwapi.StrStrIW
 @ stdcall -private StrStrW(wstr wstr) shlwapi.StrStrW
 @ stdcall WOWShellExecute(long str str str str long ptr)
-
-@ stdcall wine_update_symbolic_links(long long wstr long)

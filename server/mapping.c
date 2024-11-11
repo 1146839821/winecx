@@ -67,8 +67,6 @@ static const struct object_ops ranges_ops =
     no_add_queue,              /* add_queue */
     NULL,                      /* remove_queue */
     NULL,                      /* signaled */
-    NULL,                      /* get_esync_fd */
-    NULL,                      /* get_msync_idx */
     NULL,                      /* satisfied */
     no_signal,                 /* signal */
     no_get_fd,                 /* get_fd */
@@ -91,7 +89,6 @@ struct shared_map
     struct object   obj;             /* object header */
     struct fd      *fd;              /* file descriptor of the mapped PE file */
     struct file    *file;            /* temp file holding the shared data */
-    char            tmp_name[16];    /* name of temp file */
     struct list     entry;           /* entry in global shared maps list */
 };
 
@@ -106,8 +103,6 @@ static const struct object_ops shared_map_ops =
     no_add_queue,              /* add_queue */
     NULL,                      /* remove_queue */
     NULL,                      /* signaled */
-    NULL,                      /* get_esync_fd */
-    NULL,                      /* get_msync_idx */
     NULL,                      /* satisfied */
     no_signal,                 /* signal */
     no_get_fd,                 /* get_fd */
@@ -164,7 +159,6 @@ struct mapping
     unsigned int    flags;           /* SEC_* flags */
     struct fd      *fd;              /* fd for mapped file */
     pe_image_info_t image;           /* image info (for PE image mapping) */
-    char            tmp_name[16];    /* name of temp file if any */
     struct ranges  *committed;       /* list of committed ranges in this mapping */
     struct shared_map *shared;       /* temp file for shared PE mapping */
 };
@@ -182,8 +176,6 @@ static const struct object_ops mapping_ops =
     no_add_queue,                /* add_queue */
     NULL,                        /* remove_queue */
     NULL,                        /* signaled */
-    NULL,                        /* get_esync_fd */
-    NULL,                        /* get_msync_idx */
     NULL,                        /* satisfied */
     no_signal,                   /* signal */
     mapping_get_fd,              /* get_fd */
@@ -265,8 +257,6 @@ static struct session session =
 
 #define ROUND_SIZE(size)  (((size) + page_mask) & ~page_mask)
 
-static void unlink_temp_file( char *name );
-
 void init_memory(void)
 {
     page_mask = sysconf( _SC_PAGESIZE ) - 1;
@@ -296,7 +286,6 @@ static void shared_map_destroy( struct object *obj )
 {
     struct shared_map *shared = (struct shared_map *)obj;
 
-    unlink_temp_file( shared->tmp_name );
     release_object( shared->fd );
     release_object( shared->file );
     list_remove( &shared->entry );
@@ -358,11 +347,10 @@ static int check_current_dir_for_exec(void)
     return (ret != MAP_FAILED);
 }
 
-static int temp_dir_fd = -1;
-
 /* create a temp file for anonymous mappings */
-static int create_temp_file( file_pos_t size, char *name )
+static int create_temp_file( file_pos_t size )
 {
+    static int temp_dir_fd = -1;
     char tmpfn[16];
     int fd;
 
@@ -389,22 +377,12 @@ static int create_temp_file( file_pos_t size, char *name )
             close( fd );
             fd = -1;
         }
-        if (name) strcpy( name, tmpfn );
-        else unlink( tmpfn );
+        unlink( tmpfn );
     }
     else file_set_error();
 
     if (temp_dir_fd != server_dir_fd) fchdir( server_dir_fd );
     return fd;
-}
-
-/* unlink a temp file */
-static void unlink_temp_file( char *name )
-{
-    if (!name[0]) return;
-    if (temp_dir_fd != server_dir_fd) fchdir( temp_dir_fd );
-    unlink( name );
-    if (temp_dir_fd != server_dir_fd) fchdir( server_dir_fd );
 }
 
 /* find a memory view from its base address */
@@ -640,7 +618,6 @@ static int build_shared_mapping( struct mapping *mapping, int fd,
     char *buffer = NULL;
     int shared_fd;
     long toread;
-    char tmp_name[16];
 
     /* compute the total size of the shared mapping */
 
@@ -661,8 +638,8 @@ static int build_shared_mapping( struct mapping *mapping, int fd,
 
     /* create a temp file for the mapping */
 
-    if ((shared_fd = create_temp_file( total_size, tmp_name )) == -1) return 0;
-    if (!(file = create_file_for_fd( shared_fd, FILE_GENERIC_READ|FILE_GENERIC_WRITE, 0 ))) goto error;
+    if ((shared_fd = create_temp_file( total_size )) == -1) return 0;
+    if (!(file = create_file_for_fd( shared_fd, FILE_GENERIC_READ|FILE_GENERIC_WRITE, 0 ))) return 0;
 
     if (!(buffer = malloc( max_size ))) goto error;
 
@@ -696,15 +673,13 @@ static int build_shared_mapping( struct mapping *mapping, int fd,
     if (!(shared = alloc_object( &shared_map_ops ))) goto error;
     shared->fd = (struct fd *)grab_object( mapping->fd );
     shared->file = file;
-    strcpy( shared->tmp_name, tmp_name );
     list_add_head( &shared_map_list, &shared->entry );
     mapping->shared = shared;
     free( buffer );
     return 1;
 
  error:
-    if (file) release_object( file );
-    unlink_temp_file( tmp_name );
+    release_object( file );
     free( buffer );
     return 0;
 }
@@ -1035,7 +1010,6 @@ static struct mapping *create_mapping( struct object *root, const struct unicode
     mapping->fd          = NULL;
     mapping->shared      = NULL;
     mapping->committed   = NULL;
-    mapping->tmp_name[0] = 0;
 
     if (!(mapping->flags = get_mapping_flags( handle, flags ))) goto error;
 
@@ -1100,7 +1074,7 @@ static struct mapping *create_mapping( struct object *root, const struct unicode
         }
         if ((flags & SEC_RESERVE) && !(mapping->committed = create_ranges())) goto error;
         mapping->size = (mapping->size + page_mask) & ~((mem_size_t)page_mask);
-        if ((unix_fd = create_temp_file( mapping->size, mapping->tmp_name )) == -1) goto error;
+        if ((unix_fd = create_temp_file( mapping->size )) == -1) goto error;
         if (!(mapping->fd = create_anonymous_fd( &mapping_fd_ops, unix_fd, &mapping->obj,
                                                  FILE_SYNCHRONOUS_IO_NONALERT ))) goto error;
         allow_fd_caching( mapping->fd );
@@ -1233,7 +1207,6 @@ static void mapping_destroy( struct object *obj )
 {
     struct mapping *mapping = (struct mapping *)obj;
     assert( obj->ops == &mapping_ops );
-    unlink_temp_file( mapping->tmp_name );
     if (mapping->fd) release_object( mapping->fd );
     if (mapping->committed) release_object( mapping->committed );
     if (mapping->shared) release_object( mapping->shared );
@@ -1634,7 +1607,7 @@ DECL_HANDLER(map_image_view)
         if (add_process_view( current, view ))
         {
             current->entry_point = view->base + req->entry;
-            current->process->machine = ((view->image.image_flags & IMAGE_FLAGS_ComPlusNativeReady) && !wow64_using_32bit_prefix) ?
+            current->process->machine = (view->image.image_flags & IMAGE_FLAGS_ComPlusNativeReady) ?
                                          native_machine : req->machine;
         }
 

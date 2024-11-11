@@ -1096,16 +1096,6 @@ static DECLSPEC_NORETURN void pthread_exit_wrapper( int status )
     close( ntdll_get_thread_data()->wait_fd[1] );
     close( ntdll_get_thread_data()->reply_fd );
     close( ntdll_get_thread_data()->request_fd );
-
-#if defined(__APPLE__) && defined(__x86_64__)
-    /* Remove the PEB from the localtime field in %gs, or MacOS might try
-     * to free() the pointer and crash. That happens for processes that are
-     * using the alt loader for dock integration. */
-    __asm__ volatile (".byte 0x65\n\tmovq %q0,%c1"
-                      :
-                      : "r" (NULL), "n" (FIELD_OFFSET(TEB, Peb)));
-#endif
-
     pthread_exit( UIntToPtr(status) );
 }
 
@@ -1306,10 +1296,10 @@ NTSTATUS WINAPI NtCreateThread( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRI
 /***********************************************************************
  *              NtCreateThreadEx   (NTDLL.@)
  */
-NTSTATUS WINAPI GPT_IMPORT(NtCreateThreadEx)( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBUTES *attr,
-                                              HANDLE process, PRTL_THREAD_START_ROUTINE start, void *param,
-                                              ULONG flags, ULONG_PTR zero_bits, SIZE_T stack_commit,
-                                              SIZE_T stack_reserve, PS_ATTRIBUTE_LIST *attr_list )
+NTSTATUS WINAPI NtCreateThreadEx( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBUTES *attr,
+                                  HANDLE process, PRTL_THREAD_START_ROUTINE start, void *param,
+                                  ULONG flags, ULONG_PTR zero_bits, SIZE_T stack_commit,
+                                  SIZE_T stack_reserve, PS_ATTRIBUTE_LIST *attr_list )
 {
     static const ULONG supported_flags = THREAD_CREATE_FLAGS_CREATE_SUSPENDED | THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER;
     sigset_t sigset;
@@ -1436,21 +1426,6 @@ done:
     return STATUS_SUCCESS;
 }
 
-/* CW Hack 23015 */
-#if defined(__APPLE__) && defined(__x86_64__)
-
-NTSTATUS __attribute__((ms_abi)) msthunk_NtCreateThreadEx( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBUTES *attr,
-                                                           HANDLE process, PRTL_THREAD_START_ROUTINE start, void *param,
-                                                           ULONG flags, ULONG_PTR zero_bits, SIZE_T stack_commit,
-                                                           SIZE_T stack_reserve, PS_ATTRIBUTE_LIST *attr_list )
-{
-    return sysv_NtCreateThreadEx( handle, access, attr, process, start, param, flags,
-                                  zero_bits, stack_commit, stack_reserve, attr_list );
-}
-
-GPT_ABI_WRAPPER( NtCreateThreadEx );
-
-#endif
 
 /***********************************************************************
  *           abort_thread
@@ -2317,6 +2292,17 @@ NTSTATUS WINAPI NtQueryInformationThread( HANDLE handle, THREADINFOCLASS class,
         if (length != sizeof(ULONG)) return STATUS_INFO_LENGTH_MISMATCH;
         if (ret_len) *ret_len = sizeof(ULONG);
         *value = 0;
+        return STATUS_SUCCESS;
+    }
+
+    case ThreadIdealProcessorEx:
+    {
+        PROCESSOR_NUMBER *number = data;
+
+        FIXME( "ThreadIdealProcessorEx info class - stub\n" );
+        if (length != sizeof(*number)) return STATUS_INFO_LENGTH_MISMATCH;
+        memset( number, 0, sizeof(*number) );
+        if (ret_len) *ret_len = sizeof(*number);
         return STATUS_SUCCESS;
     }
 

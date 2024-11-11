@@ -48,7 +48,6 @@
 #include <mach/thread_act.h>
 #include <mach/mach_vm.h>
 #include <servers/bootstrap.h>
-#include <sys/sysctl.h>
 
 static mach_port_t server_mach_port;
 
@@ -173,26 +172,6 @@ void init_thread_context( struct thread *thread )
 {
 }
 
-/* CX HACK 21217 */
-static int is_apple_silicon( void )
-{
-    static int apple_silicon_status, did_check = 0;
-    if (!did_check)
-    {
-        /* returns 0 for native process or on error, 1 for translated */
-        int ret = 0;
-        size_t size = sizeof(ret);
-        if (sysctlbyname( "sysctl.proc_translated", &ret, &size, NULL, 0 ) == -1)
-            apple_silicon_status = 0;
-        else
-            apple_silicon_status = ret;
-
-        did_check = 1;
-    }
-
-    return apple_silicon_status;
-}
-
 /* retrieve the thread x86 registers */
 void get_thread_context( struct thread *thread, context_t *context, unsigned int flags )
 {
@@ -270,13 +249,6 @@ void get_thread_context( struct thread *thread, context_t *context, unsigned int
             set_error( STATUS_INVALID_PARAMETER );
             goto done;
         }
-        context->flags |= SERVER_CTX_DEBUG_REGISTERS;
-    }
-    else if (is_apple_silicon())
-    {
-        /* CX HACK 21217: Fake debug registers on Apple Silicon */
-        fprintf( stderr, "%04x: thread_get_state failed on Apple Silicon - faking zero debug registers\n", thread->id );
-        memset( &context->debug, 0, sizeof(context->debug) );
         context->flags |= SERVER_CTX_DEBUG_REGISTERS;
     }
     else
@@ -420,7 +392,12 @@ int send_thread_signal( struct thread *thread, int sig )
 int read_process_memory( struct process *process, client_ptr_t ptr, data_size_t size, char *dest )
 {
     kern_return_t ret;
-    mach_vm_size_t bytes_read;
+    mach_msg_type_number_t bytes_read;
+    mach_vm_offset_t offset;
+    vm_offset_t data;
+    mach_vm_address_t aligned_address;
+    mach_vm_size_t aligned_size;
+    unsigned int page_size = get_page_size();
     mach_port_t process_port = get_process_port( process );
 
     if (!process_port)
@@ -434,8 +411,24 @@ int read_process_memory( struct process *process, client_ptr_t ptr, data_size_t 
         return 0;
     }
 
-    ret = mach_vm_read_overwrite( process_port, (mach_vm_address_t)ptr, (mach_vm_size_t)size, (mach_vm_address_t)dest, &bytes_read );
-    mach_set_error( ret );
+    if ((ret = task_suspend( process_port )) != KERN_SUCCESS)
+    {
+        mach_set_error( ret );
+        return 0;
+    }
+
+    offset = ptr % page_size;
+    aligned_address = (mach_vm_address_t)(ptr - offset);
+    aligned_size = (size + offset + page_size - 1) / page_size * page_size;
+
+    ret = mach_vm_read( process_port, aligned_address, aligned_size, &data, &bytes_read );
+    if (ret != KERN_SUCCESS) mach_set_error( ret );
+    else
+    {
+        memcpy( dest, (char *)data + offset, size );
+        mach_vm_deallocate( mach_task_self(), data, bytes_read );
+    }
+    task_resume( process_port );
     return (ret == KERN_SUCCESS);
 }
 
@@ -443,9 +436,15 @@ int read_process_memory( struct process *process, client_ptr_t ptr, data_size_t 
 int write_process_memory( struct process *process, client_ptr_t ptr, data_size_t size, const char *src )
 {
     kern_return_t ret;
+    mach_vm_address_t aligned_address, region_address;
+    mach_vm_size_t aligned_size, region_size;
+    mach_msg_type_number_t info_size, bytes_read;
+    mach_vm_offset_t offset;
+    vm_offset_t task_mem = 0;
+    struct vm_region_basic_info_64 info;
+    mach_port_t dummy;
     unsigned int page_size = get_page_size();
     mach_port_t process_port = get_process_port( process );
-    mach_vm_offset_t data;
 
     if (!process_port)
     {
@@ -457,18 +456,68 @@ int write_process_memory( struct process *process, client_ptr_t ptr, data_size_t
         set_error( STATUS_ACCESS_DENIED );
         return 0;
     }
-    if (posix_memalign( (void **)&data, page_size, size ))
+
+    offset = ptr % page_size;
+    aligned_address = (mach_vm_address_t)(ptr - offset);
+    aligned_size = (size + offset + page_size - 1) / page_size * page_size;
+
+    if ((ret = task_suspend( process_port )) != KERN_SUCCESS)
     {
-        set_error( STATUS_NO_MEMORY );
+        mach_set_error( ret );
         return 0;
     }
 
-    memcpy( (void *)data, src, size );
+    ret = mach_vm_read( process_port, aligned_address, aligned_size, &task_mem, &bytes_read );
+    if (ret != KERN_SUCCESS)
+    {
+        mach_set_error( ret );
+        goto failed;
+    }
+    region_address = aligned_address;
+    info_size = sizeof(info);
+    ret = mach_vm_region( process_port, &region_address, &region_size, VM_REGION_BASIC_INFO_64,
+                     (vm_region_info_t)&info, &info_size, &dummy );
+    if (ret != KERN_SUCCESS)
+    {
+        mach_set_error( ret );
+        goto failed;
+    }
+    if (region_address > aligned_address ||
+        region_address + region_size < aligned_address + aligned_size)
+    {
+        /* FIXME: should support multiple regions */
+        set_error( ERROR_ACCESS_DENIED );
+        goto failed;
+    }
+    ret = mach_vm_protect( process_port, aligned_address, aligned_size, 0, VM_PROT_READ | VM_PROT_WRITE );
+    if (ret != KERN_SUCCESS)
+    {
+        mach_set_error( ret );
+        goto failed;
+    }
 
-    ret = mach_vm_write( process_port, (mach_vm_address_t)ptr, data, (mach_msg_type_number_t)size );
-    free( (void *)data );
-    mach_set_error( ret );
-    return (ret == KERN_SUCCESS);
+    /* FIXME: there's an optimization that can be made: check first and last */
+    /* pages for writability; read first and last pages; write interior */
+    /* pages to task without ever reading&modifying them; if that succeeds, */
+    /* modify first and last pages and write them. */
+
+    memcpy( (char*)task_mem + offset, src, size );
+
+    ret = mach_vm_write( process_port, aligned_address, task_mem, bytes_read );
+    if (ret != KERN_SUCCESS) mach_set_error( ret );
+    else
+    {
+        mach_vm_deallocate( mach_task_self(), task_mem, bytes_read );
+        /* restore protection */
+        mach_vm_protect( process_port, aligned_address, aligned_size, 0, info.protection );
+        task_resume( process_port );
+        return 1;
+    }
+
+failed:
+    if (task_mem) mach_vm_deallocate( mach_task_self(), task_mem, bytes_read );
+    task_resume( process_port );
+    return 0;
 }
 
 /* retrieve an LDT selector entry */
@@ -477,9 +526,10 @@ void get_selector_entry( struct thread *thread, int entry, unsigned int *base,
 {
     const unsigned int total_size = (2 * sizeof(int) + 1) * 8192;
     struct process *process = thread->process;
-    mach_vm_address_t data;
+    unsigned int page_size = get_page_size();
+    vm_offset_t data;
     kern_return_t ret;
-    mach_vm_size_t bytes_read;
+    mach_msg_type_number_t bytes_read;
     mach_port_t process_port = get_process_port( thread->process );
 
     if (!process->ldt_copy || !process_port)
@@ -489,27 +539,29 @@ void get_selector_entry( struct thread *thread, int entry, unsigned int *base,
     }
     if (entry >= 8192)
     {
-        set_error( STATUS_ACCESS_VIOLATION );
+        set_error( STATUS_INVALID_PARAMETER );  /* FIXME */
         return;
     }
 
-    if (!(data = (mach_vm_address_t)malloc( total_size )))
+    if ((ret = task_suspend( process_port )) == KERN_SUCCESS)
     {
-        set_error( STATUS_NO_MEMORY );
-        return;
-    }
+        mach_vm_offset_t offset = process->ldt_copy % page_size;
+        mach_vm_address_t aligned_address = (mach_vm_address_t)(process->ldt_copy - offset);
+        mach_vm_size_t aligned_size = (total_size + offset + page_size - 1) / page_size * page_size;
 
-    ret = mach_vm_read_overwrite( process_port, (mach_vm_address_t)process->ldt_copy, (mach_vm_size_t)total_size, data, &bytes_read );
-    if (ret != KERN_SUCCESS) mach_set_error( ret );
-    else
-    {
-        const int *ldt = (const int *)data;
-        memcpy( base, ldt + entry, sizeof(int) );
-        memcpy( limit, ldt + entry + 8192, sizeof(int) );
-        memcpy( flags, (char *)(ldt + 2 * 8192) + entry, 1 );
+        ret = mach_vm_read( process_port, aligned_address, aligned_size, &data, &bytes_read );
+        if (ret != KERN_SUCCESS) mach_set_error( ret );
+        else
+        {
+            const int *ldt = (const int *)((char *)data + offset);
+            memcpy( base, ldt + entry, sizeof(int) );
+            memcpy( limit, ldt + entry + 8192, sizeof(int) );
+            memcpy( flags, (char *)(ldt + 2 * 8192) + entry, 1 );
+            mach_vm_deallocate( mach_task_self(), data, bytes_read );
+        }
+        task_resume( process_port );
     }
-
-    free( (void *)data );
+    else mach_set_error( ret );
 }
 
 #endif  /* USE_MACH */

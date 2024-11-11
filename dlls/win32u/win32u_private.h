@@ -50,16 +50,12 @@ extern void create_window_surface( HWND hwnd, BOOL create_layered, const RECT *s
 extern struct window_surface *get_driver_window_surface( struct window_surface *surface, UINT monitor_dpi );
 extern void erase_now( HWND hwnd, UINT rdw_flags );
 extern void flush_window_surfaces( BOOL idle );
-extern void move_window_bits( HWND hwnd, const RECT *visible_rect, const RECT *old_visible_rect,
-                              const RECT *window_rect, const RECT *valid_rects );
+extern void move_window_bits( HWND hwnd, const struct window_rects *rects, const RECT *valid_rects );
 extern void move_window_bits_surface( HWND hwnd, const RECT *window_rect, struct window_surface *old_surface,
                                       const RECT *old_visible_rect, const RECT *valid_rects );
 extern void register_window_surface( struct window_surface *old,
                                      struct window_surface *new );
 extern void *window_surface_get_color( struct window_surface *surface, BITMAPINFO *info );
-extern struct window_surface *create_shm_surface( HWND hwnd, HWND parent, const RECT *visible_rect,
-                                                  struct window_surface *old_surface );
-extern void process_surface_message( struct flush_shm_surface_params *params );
 
 /* defwnd.c */
 extern BOOL adjust_window_rect( RECT *rect, DWORD style, BOOL menu, DWORD ex_style, UINT dpi );
@@ -110,7 +106,7 @@ extern BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus, DW
 extern BOOL set_ime_composition_rect( HWND hwnd, RECT rect );
 extern void toggle_caret( HWND hwnd );
 extern void update_mouse_tracking_info( HWND hwnd );
-extern BOOL get_clip_cursor( RECT *rect, UINT dpi );
+extern BOOL get_clip_cursor( RECT *rect, UINT dpi, MONITOR_DPI_TYPE type );
 extern BOOL process_wine_clipcursor( HWND hwnd, UINT flags, BOOL reset );
 extern BOOL clip_fullscreen_window( HWND hwnd, BOOL reset );
 extern USHORT map_scan_to_kbd_vkey( USHORT scan, HKL layout );
@@ -190,6 +186,9 @@ extern RECT map_dpi_rect( RECT rect, UINT dpi_from, UINT dpi_to );
 extern HRGN map_dpi_region( HRGN region, UINT dpi_from, UINT dpi_to );
 extern struct window_rects map_dpi_window_rects( struct window_rects rects, UINT dpi_from, UINT dpi_to );
 extern BOOL message_beep( UINT i );
+extern RECT map_rect_raw_to_virt( RECT rect, UINT dpi_to );
+extern RECT map_rect_virt_to_raw( RECT rect, UINT dpi_from );
+extern struct window_rects map_window_rects_virt_to_raw( struct window_rects rects, UINT dpi_from );
 extern POINT point_phys_to_win_dpi( HWND hwnd, POINT pt );
 extern POINT point_thread_to_win_dpi( HWND hwnd, POINT pt );
 extern RECT rect_thread_to_win_dpi( HWND hwnd, RECT rect );

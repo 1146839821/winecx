@@ -880,6 +880,17 @@ struct directory_entry
 
 };
 
+struct monitor_info
+{
+    rectangle_t raw;
+    rectangle_t virt;
+    unsigned int flags;
+    unsigned int dpi;
+};
+#define MONITOR_FLAG_PRIMARY  0x01
+#define MONITOR_FLAG_CLONE    0x02
+#define MONITOR_FLAG_INACTIVE 0x04
+
 
 
 
@@ -1377,6 +1388,21 @@ struct dup_handle_request
     char __pad_36[4];
 };
 struct dup_handle_reply
+{
+    struct reply_header __header;
+    obj_handle_t handle;
+    char __pad_12[4];
+};
+
+
+
+struct allocate_reserve_object_request
+{
+    struct request_header __header;
+    int type;
+    /* VARARG(objattr,object_attributes); */
+};
+struct allocate_reserve_object_reply
 {
     struct reply_header __header;
     obj_handle_t handle;
@@ -3827,6 +3853,19 @@ struct close_winstation_reply
 
 
 
+struct set_winstation_monitors_request
+{
+    struct request_header __header;
+    /* VARARG(infos,monitor_infos); */
+    char __pad_12[4];
+};
+struct set_winstation_monitors_reply
+{
+    struct reply_header __header;
+};
+
+
+
 struct get_process_winstation_request
 {
     struct request_header __header;
@@ -5387,8 +5426,27 @@ struct remove_completion_request
 {
     struct request_header __header;
     obj_handle_t handle;
+    int          alertable;
+    char __pad_20[4];
 };
 struct remove_completion_reply
+{
+    struct reply_header __header;
+    apc_param_t   ckey;
+    apc_param_t   cvalue;
+    apc_param_t   information;
+    unsigned int  status;
+    obj_handle_t  wait_handle;
+};
+
+
+
+struct get_thread_completion_request
+{
+    struct request_header __header;
+    char __pad_12[4];
+};
+struct get_thread_completion_reply
 {
     struct reply_header __header;
     apc_param_t   ckey;
@@ -5777,6 +5835,7 @@ struct resume_process_reply
 };
 
 
+
 struct get_next_thread_request
 {
     struct request_header __header;
@@ -5794,6 +5853,7 @@ struct get_next_thread_reply
 };
 
 
+
 struct set_keyboard_repeat_request
 {
     struct request_header __header;
@@ -5805,188 +5865,6 @@ struct set_keyboard_repeat_reply
 {
     struct reply_header __header;
     int enable;
-    char __pad_12[4];
-};
-
-enum esync_type
-{
-    ESYNC_SEMAPHORE = 1,
-    ESYNC_AUTO_EVENT,
-    ESYNC_MANUAL_EVENT,
-    ESYNC_MUTEX,
-    ESYNC_AUTO_SERVER,
-    ESYNC_MANUAL_SERVER,
-    ESYNC_QUEUE,
-};
-
-
-struct create_esync_request
-{
-    struct request_header __header;
-    unsigned int access;
-    int          initval;
-    int          type;
-    int          max;
-    /* VARARG(objattr,object_attributes); */
-    char __pad_28[4];
-};
-struct create_esync_reply
-{
-    struct reply_header __header;
-    obj_handle_t handle;
-    int          type;
-    unsigned int shm_idx;
-    char __pad_20[4];
-};
-
-struct open_esync_request
-{
-    struct request_header __header;
-    unsigned int access;
-    unsigned int attributes;
-    obj_handle_t rootdir;
-    int          type;
-    /* VARARG(name,unicode_str); */
-    char __pad_28[4];
-};
-struct open_esync_reply
-{
-    struct reply_header __header;
-    obj_handle_t handle;
-    int          type;
-    unsigned int shm_idx;
-    char __pad_20[4];
-};
-
-
-struct get_esync_read_fd_request
-{
-    struct request_header __header;
-    obj_handle_t handle;
-};
-struct get_esync_read_fd_reply
-{
-    struct reply_header __header;
-    int          type;
-    unsigned int shm_idx;
-};
-
-
-struct get_esync_write_fd_request
-{
-    struct request_header __header;
-    obj_handle_t handle;
-};
-struct get_esync_write_fd_reply
-{
-    struct reply_header __header;
-};
-
-
-struct esync_msgwait_request
-{
-    struct request_header __header;
-    int          in_msgwait;
-};
-struct esync_msgwait_reply
-{
-    struct reply_header __header;
-};
-
-
-struct get_esync_apc_fd_request
-{
-    struct request_header __header;
-    char __pad_12[4];
-};
-struct get_esync_apc_fd_reply
-{
-    struct reply_header __header;
-};
-
-enum msync_type
-{
-    MSYNC_SEMAPHORE = 1,
-    MSYNC_AUTO_EVENT,
-    MSYNC_MANUAL_EVENT,
-    MSYNC_MUTEX,
-    MSYNC_AUTO_SERVER,
-    MSYNC_MANUAL_SERVER,
-    MSYNC_QUEUE,
-};
-
-
-struct create_msync_request
-{
-    struct request_header __header;
-    unsigned int access;
-    int low;
-    int high;
-    int type;
-    /* VARARG(objattr,object_attributes); */
-    char __pad_28[4];
-};
-struct create_msync_reply
-{
-    struct reply_header __header;
-    obj_handle_t handle;
-    int type;
-    unsigned int shm_idx;
-    char __pad_20[4];
-};
-
-
-struct open_msync_request
-{
-    struct request_header __header;
-    unsigned int access;
-    unsigned int attributes;
-    obj_handle_t rootdir;
-    int          type;
-    /* VARARG(name,unicode_str); */
-    char __pad_28[4];
-};
-struct open_msync_reply
-{
-    struct reply_header __header;
-    obj_handle_t handle;
-    int          type;
-    unsigned int shm_idx;
-    char __pad_20[4];
-};
-
-
-struct get_msync_idx_request
-{
-    struct request_header __header;
-    obj_handle_t handle;
-};
-struct get_msync_idx_reply
-{
-    struct reply_header __header;
-    int          type;
-    unsigned int shm_idx;
-};
-
-struct msync_msgwait_request
-{
-    struct request_header __header;
-    int          in_msgwait;
-};
-struct msync_msgwait_reply
-{
-    struct reply_header __header;
-};
-
-struct get_msync_apc_idx_request
-{
-    struct request_header __header;
-    char __pad_12[4];
-};
-struct get_msync_apc_idx_reply
-{
-    struct reply_header __header;
-    unsigned int shm_idx;
     char __pad_12[4];
 };
 
@@ -6017,6 +5895,7 @@ enum request
     REQ_close_handle,
     REQ_set_handle_info,
     REQ_dup_handle,
+    REQ_allocate_reserve_object,
     REQ_compare_objects,
     REQ_set_object_permanence,
     REQ_open_process,
@@ -6162,6 +6041,7 @@ enum request
     REQ_create_winstation,
     REQ_open_winstation,
     REQ_close_winstation,
+    REQ_set_winstation_monitors,
     REQ_get_process_winstation,
     REQ_set_process_winstation,
     REQ_enum_winstation,
@@ -6254,6 +6134,7 @@ enum request
     REQ_open_completion,
     REQ_add_completion,
     REQ_remove_completion,
+    REQ_get_thread_completion,
     REQ_query_completion,
     REQ_set_completion_info,
     REQ_add_fd_completion,
@@ -6281,17 +6162,6 @@ enum request
     REQ_resume_process,
     REQ_get_next_thread,
     REQ_set_keyboard_repeat,
-    REQ_create_esync,
-    REQ_open_esync,
-    REQ_get_esync_read_fd,
-    REQ_get_esync_write_fd,
-    REQ_esync_msgwait,
-    REQ_get_esync_apc_fd,
-    REQ_create_msync,
-    REQ_open_msync,
-    REQ_get_msync_idx,
-    REQ_msync_msgwait,
-    REQ_get_msync_apc_idx,
     REQ_NB_REQUESTS
 };
 
@@ -6323,6 +6193,7 @@ union generic_request
     struct close_handle_request close_handle_request;
     struct set_handle_info_request set_handle_info_request;
     struct dup_handle_request dup_handle_request;
+    struct allocate_reserve_object_request allocate_reserve_object_request;
     struct compare_objects_request compare_objects_request;
     struct set_object_permanence_request set_object_permanence_request;
     struct open_process_request open_process_request;
@@ -6468,6 +6339,7 @@ union generic_request
     struct create_winstation_request create_winstation_request;
     struct open_winstation_request open_winstation_request;
     struct close_winstation_request close_winstation_request;
+    struct set_winstation_monitors_request set_winstation_monitors_request;
     struct get_process_winstation_request get_process_winstation_request;
     struct set_process_winstation_request set_process_winstation_request;
     struct enum_winstation_request enum_winstation_request;
@@ -6560,6 +6432,7 @@ union generic_request
     struct open_completion_request open_completion_request;
     struct add_completion_request add_completion_request;
     struct remove_completion_request remove_completion_request;
+    struct get_thread_completion_request get_thread_completion_request;
     struct query_completion_request query_completion_request;
     struct set_completion_info_request set_completion_info_request;
     struct add_fd_completion_request add_fd_completion_request;
@@ -6587,17 +6460,6 @@ union generic_request
     struct resume_process_request resume_process_request;
     struct get_next_thread_request get_next_thread_request;
     struct set_keyboard_repeat_request set_keyboard_repeat_request;
-    struct create_esync_request create_esync_request;
-    struct open_esync_request open_esync_request;
-    struct get_esync_read_fd_request get_esync_read_fd_request;
-    struct get_esync_write_fd_request get_esync_write_fd_request;
-    struct esync_msgwait_request esync_msgwait_request;
-    struct get_esync_apc_fd_request get_esync_apc_fd_request;
-    struct create_msync_request create_msync_request;
-    struct open_msync_request open_msync_request;
-    struct get_msync_idx_request get_msync_idx_request;
-    struct msync_msgwait_request msync_msgwait_request;
-    struct get_msync_apc_idx_request get_msync_apc_idx_request;
 };
 union generic_reply
 {
@@ -6627,6 +6489,7 @@ union generic_reply
     struct close_handle_reply close_handle_reply;
     struct set_handle_info_reply set_handle_info_reply;
     struct dup_handle_reply dup_handle_reply;
+    struct allocate_reserve_object_reply allocate_reserve_object_reply;
     struct compare_objects_reply compare_objects_reply;
     struct set_object_permanence_reply set_object_permanence_reply;
     struct open_process_reply open_process_reply;
@@ -6772,6 +6635,7 @@ union generic_reply
     struct create_winstation_reply create_winstation_reply;
     struct open_winstation_reply open_winstation_reply;
     struct close_winstation_reply close_winstation_reply;
+    struct set_winstation_monitors_reply set_winstation_monitors_reply;
     struct get_process_winstation_reply get_process_winstation_reply;
     struct set_process_winstation_reply set_process_winstation_reply;
     struct enum_winstation_reply enum_winstation_reply;
@@ -6864,6 +6728,7 @@ union generic_reply
     struct open_completion_reply open_completion_reply;
     struct add_completion_reply add_completion_reply;
     struct remove_completion_reply remove_completion_reply;
+    struct get_thread_completion_reply get_thread_completion_reply;
     struct query_completion_reply query_completion_reply;
     struct set_completion_info_reply set_completion_info_reply;
     struct add_fd_completion_reply add_fd_completion_reply;
@@ -6891,22 +6756,11 @@ union generic_reply
     struct resume_process_reply resume_process_reply;
     struct get_next_thread_reply get_next_thread_reply;
     struct set_keyboard_repeat_reply set_keyboard_repeat_reply;
-    struct create_esync_reply create_esync_reply;
-    struct open_esync_reply open_esync_reply;
-    struct get_esync_read_fd_reply get_esync_read_fd_reply;
-    struct get_esync_write_fd_reply get_esync_write_fd_reply;
-    struct esync_msgwait_reply esync_msgwait_reply;
-    struct get_esync_apc_fd_reply get_esync_apc_fd_reply;
-    struct create_msync_reply create_msync_reply;
-    struct open_msync_reply open_msync_reply;
-    struct get_msync_idx_reply get_msync_idx_reply;
-    struct msync_msgwait_reply msync_msgwait_reply;
-    struct get_msync_apc_idx_reply get_msync_apc_idx_reply;
 };
 
 /* ### protocol_version begin ### */
 
-#define SERVER_PROTOCOL_VERSION 1796
+#define SERVER_PROTOCOL_VERSION 847
 
 /* ### protocol_version end ### */
 
